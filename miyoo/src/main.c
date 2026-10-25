@@ -293,8 +293,11 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
             if (!first_alert) first_alert = a;
         }
         /* "NEW" mirrors Paseo: once the agent is back to work, or no longer needs attention there
-         * (you opened it in Paseo), it stops counting. The buzz/cue above has already happened. */
-        if (a->bucket == B_RUNNING || a->bucket == B_DONE) t->alert = false;
+         * (you opened it in Paseo), it stops counting. The buzz/cue above has already happened.
+         * Errored agents stay in the failed bucket after you look, so for them the signal is Paseo
+         * clearing attentionReason "error" (agent-manager.js sets it on entering error). */
+        bool acked_error = a->bucket == B_FAILED && strcmp(a->attention, "error") != 0;
+        if (a->bucket == B_RUNNING || a->bucket == B_DONE || acked_error) t->alert = false;
     }
     int keep = 0;
     for (int i = 0; i < app->n_track; i++)
