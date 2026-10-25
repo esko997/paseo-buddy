@@ -182,14 +182,16 @@ enum {
 /* Activity points per find: 1 per completed turn, 1 per 1000 fresh output tokens. */
 #define FIND_POINTS 1000
 
-/* Adult forms: form 0 is the original look; forms 1..15 are generated from the pet's DNA and adult
- * family. Ids are stable and never reroll; every reached form stays switchable and choosing one
- * never consumes anything. */
+/* Adult forms: form 0 is the original look; forms 1..15 are generated from the current life's DNA
+ * and adult family. Ids are stable and never reroll within a life; every reached form stays
+ * switchable and choosing one never consumes anything. A DNA rewrite starts a new set of forms. */
 #define PET_FORMS 16
 
 /* Each trait is 0..2. body round/square/pear; ears rounded/pointed/drooping; tail curl/fin/tuft;
  * crown antenna/horns/sprout; wings small/feather/fin; markings freckles/belly/stripes;
- * motion bounce/float/waddle. Only meaningful for forms 1..15 (form 0 is the existing art). */
+ * motion bounce/float/waddle. Only meaningful for forms 1..15 (form 0 is the existing art).
+ * Trait indices 0..PET_TRAITS-1 (Pet.inherited_trait, pet_rewrite_preview) follow field order. */
+#define PET_TRAITS 7
 typedef struct {
     uint8_t body, ears, tail, crown, wings, markings, motion;
 } PetTraits;
@@ -204,15 +206,28 @@ typedef struct {
     /* Its counts were known while finds existed, so growth past them is fresh activity. False for
      * ledgers carried over from saves made before finds (their first delta may be pre-upgrade work). */
     bool finds_armed;
+    /* Its counts were known during the current life, so growth past them feeds this life. Cleared
+     * by a DNA rewrite: each bridge's first snapshot afterwards is only a baseline. Generation 1
+     * ignores it (all food, backlog included, feeds the original life). */
+    bool life_armed;
 } LedgerSeen;
 
 typedef struct {
     char name[16];
+    /* Lifetime totals, kept across DNA rewrites: cosmetic milestones, age records, stats. */
     int64_t born;
     int64_t xp; /* lifetime output tokens eaten */
     int64_t diet[N_FAMILIES];
+    /* Current life (since the last DNA rewrite; the whole lifetime for generation 1): drives stage,
+     * forms, favorite family and the adult family lock. */
+    int64_t life_born;
+    int64_t life_xp;
+    int64_t life_diet[N_FAMILIES];
+    uint32_t generation;     /* 1 = original life, +1 per DNA rewrite */
+    int8_t inherited_trait;  /* trait index kept from the previous life's final form, -1 = none */
+    uint8_t inherited_value; /* its value 0..2 (meaningful only with inherited_trait >= 0) */
     Stage stage;
-    Family adult_family; /* locked in when it becomes an adult */
+    Family adult_family; /* locked in when this life becomes an adult */
     int64_t lifetime_turns;
     int64_t day;          /* bridge-local day number the today_* counters belong to */
     int64_t today_tokens; /* resets at local midnight; a stat, never a requirement */
@@ -232,8 +247,9 @@ typedef struct {
     int64_t find_tokens; /* fresh output tokens not yet worth a point, 0..999 */
     int64_t find_day;    /* bridge-local day (as `day`) of the last drawn find; -1 = welcome find pending */
     uint64_t find_rng;   /* pet-specific draw sequence state */
-    /* Evolution: `dna` is fixed at birth (0 = not stored yet; see pet_dna()), `form` is the worn
-     * form 0..PET_FORMS-1 and `forms_seen` the highest ready form already browsed (NEW indicator). */
+    /* Evolution: `dna` is fixed for each life (at birth, re-drawn by a DNA rewrite; 0 = not stored
+     * yet, see pet_dna()), `form` is the worn form 0..PET_FORMS-1 and `forms_seen` the highest
+     * ready form already browsed (NEW indicator). */
     uint64_t dna;
     uint8_t form;
     uint8_t forms_seen;
@@ -248,20 +264,30 @@ typedef struct {
     ItemSet unlocked; /* ids newly earned by this feed */
 } FeedResult;
 
+/* A new original life: generation 1, life_born = born, no inherited trait. */
 void pet_init(Pet *p, const char *name, int64_t now);
+/* Lax key=value reader. Files from before DNA rewrites load as generation 1 with the current life
+ * equal to the lifetime (life_xp = xp, life_diet = diet, life_born = born), so they keep their
+ * exact DNA, forms and look. */
 bool pet_load(Pet *p, const char *path);
+/* Writes path.tmp, fsyncs it and renames it over path; the rename is the last fallible step.
+ * False (path untouched) if the temporary path would not fit 768 bytes or any write fails. */
 bool pet_save(const Pet *p, const char *path);
 
-/* Eats token growth reported by one bridge (deltas against what this ledger reported before). */
+/* Eats token growth reported by one bridge (deltas against what this ledger reported before).
+ * Lifetime totals always grow. Generation 1 credits all of it (backlog included) to the current
+ * life too; later lives grow only from ledgers already known and life_armed before this feed, so
+ * neither a new bridge's history nor the first snapshot after a rewrite feeds them. Every feed
+ * arms its ledger for the current life. */
 FeedResult pet_feed(Pet *p, const Feed *f, int64_t now, int32_t tz_offset);
 void pet_pat(Pet *p, int64_t now);
 
 bool pet_asleep(int64_t now, int32_t tz_offset);
 Mood pet_mood(const Pet *p, int64_t now, int32_t tz_offset, int waiting, int running);
 const char *stage_name(Stage s);
-/* Lifetime tokens needed to reach the next stage (0 for adults). */
+/* Current-life tokens needed to reach the next stage (0 for adults). */
 int64_t stage_threshold(Stage s);
-/* Family that has fed it the most so far; FAM_OTHER with no food at all. */
+/* Family that has fed the current life the most so far; FAM_OTHER with no food this life. */
 Family pet_favorite(const Pet *p);
 /* Today's counters, reset if the bridge-local day changed. */
 void pet_roll_day(Pet *p, int64_t now, int32_t tz_offset);
@@ -283,7 +309,8 @@ int pet_worn(const Pet *p, int slot);
 bool pet_toggle_equip(Pet *p, int id);
 /* Grants unlocks earned by date/age (seasonal, birthday, days alive), any stat milestone already
  * reached (so existing pets catch up), a find from banked points on a new day, and completed set
- * rewards. Returns newly earned ids. Deterministic in (pet, now, tz). */
+ * rewards. Milestones and ages use lifetime totals (xp, diet, born), never the current life.
+ * Returns newly earned ids. Deterministic in (pet, now, tz). */
 ItemSet pet_check_unlocks(Pet *p, int64_t now, int32_t tz_offset);
 
 /* Collection sets. */
@@ -308,19 +335,34 @@ bool pet_find_waiting(const Pet *p, int64_t now, int32_t tz_offset);
 /* Evolution. Stored DNA, or the deterministic fallback from name and birth time; never depends on
  * the mutable find sequence. */
 uint64_t pet_dna(const Pet *p);
-/* Lifetime tokens that unlock a form: 0 for the original (and invalid forms),
+/* Current-life tokens that unlock a form: 0 for the original (and invalid forms),
  * 2000000 + (form - 1) * form * 500000 for forms 1..15. */
 int64_t pet_form_threshold(int form);
 /* Forms ready to wear including the original: 1 before adulthood, then 1 + generated forms whose
- * threshold lifetime XP has reached (at most PET_FORMS). Ready forms are always 0..n-1. */
+ * threshold the current life's XP has reached (at most PET_FORMS). Ready forms are always 0..n-1. */
 int pet_forms_available(const Pet *p);
 /* Traits of generated form 1..15 (all zero for 0 or invalid). Form 1 comes from the DNA mixed with
  * the adult family (the current favorite, as a preview, before adulthood); each later form bumps
  * one trait by 1 mod 3, cycling through the seven fields, so all fifteen are distinct and
- * neighbours share six traits. */
+ * neighbours share six traits. With an inherited trait every form wears inherited_value for it and
+ * the cycle runs over the other six fields only (still fifteen distinct forms, one change each). */
 PetTraits pet_form_traits(const Pet *p, int form);
 /* Wears a ready form. False (and no change) for an invalid, locked or already worn form. Never
  * touches equipment, XP or unlocks. */
 bool pet_choose_form(Pet *p, int form);
 /* Marks every currently ready form as seen. */
 void pet_seen_forms(Pet *p);
+
+/* DNA rewrite: an adult whose current life has every form (final form PET_FORMS-1) may start a new
+ * life. True when that is the case and the generation can still advance. */
+bool pet_rewrite_ready(const Pet *p);
+/* The pet a rewrite would produce, written to *out (untouched on false); never modifies *p. False
+ * unless pet_rewrite_ready(p), 0 <= trait < PET_TRAITS and now > 0 and now >= p->life_born. Keeps
+ * name, lifetime totals, collection, equipment, finds, day counters and ledgers; starts life
+ * generation + 1 at now as a Baby with no life XP/diet, adult family FAM_OTHER, original form,
+ * nothing browsed, no cheer/eating, every ledger disarmed for the new life. Its DNA is fresh,
+ * nonzero and different, derived only from the old DNA and generation (never trait, time or finds),
+ * so cancelling and reopening shows the same candidate. inherited_trait = trait and inherited_value
+ * = that trait's value in the OLD life's final form PET_FORMS-1 (not the worn form). Persisting it
+ * (with the archived previous life) is pet_rewrite_commit() in rewrite.h. */
+bool pet_rewrite_preview(const Pet *p, int trait, int64_t now, Pet *out);

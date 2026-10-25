@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "pet_view.h"
+#include "rebirth_view.h"
 #include "theme.h"
 
 #define BUBBLE_MS 4000
@@ -104,7 +105,7 @@ static int draw_tag(Canvas *c, int x, int y, const char *s, uint32_t bg) {
 /* What a locked form needs, written out in full. */
 static void requirement(const Pet *p, int form, char *buf, size_t len) {
     char name[16], need[16], left[16];
-    int64_t at = pet_form_threshold(form), togo = at - p->xp;
+    int64_t at = pet_form_threshold(form), togo = at - p->life_xp;
     form_name(form, name, sizeof name);
     format_tokens(at, need, sizeof need);
     format_tokens(togo > 0 ? togo : 0, left, sizeof left);
@@ -187,7 +188,7 @@ static void draw_strip(Canvas *c, const Pet *p, int sel, int64_t now_ms) {
 static void draw_progress(Canvas *c, const Pet *p, int x, int y, int w) {
     int fw = gfx_font_w(FONT_BODY), ready = ready_forms(p);
     if (ready >= PET_FORMS) {
-        gfx_text_fit(c, FONT_BODY, x, y, GROW_COL, "All 16 forms unlocked! Switch between them any time.", w);
+        gfx_text_fit(c, FONT_BODY, x, y, GROW_COL, "All forms unlocked! Y opens DNA Rewrite and past lives.", w);
         return;
     }
     char label[24], num[40], have[16], need[16];
@@ -199,12 +200,12 @@ static void draw_progress(Canvas *c, const Pet *p, int x, int y, int w) {
         snprintf(label, sizeof label, "Next: Form %d", ready);
         lo = pet_form_threshold(ready - 1), hi = pet_form_threshold(ready);
     }
-    format_tokens(p->xp, have, sizeof have);
+    format_tokens(p->life_xp, have, sizeof have);
     format_tokens(hi, need, sizeof need);
     snprintf(num, sizeof num, "%s/%s", have, need);
     int lw = 14 * fw, nw = (int)strlen(num) * fw;
     gfx_text(c, FONT_BODY, x, y, DIM, label, 0);
-    double frac = hi > lo ? (double)(p->xp - lo) / (double)(hi - lo) : 1.0;
+    double frac = hi > lo ? (double)(p->life_xp - lo) / (double)(hi - lo) : 1.0;
     gfx_bar(c, x + lw, y + 5, w - lw - nw - fw, 10, frac, FAINT, GROW_COL);
     gfx_text(c, FONT_BODY, x + w - nw, y, TEXT, num, 0);
 }
@@ -233,6 +234,10 @@ static int draw_button(Canvas *c, int x, int y, const char *key, const char *tex
 
 void evolution_draw(Canvas *c, const App *app, int64_t now_ms) {
     if (!app->pet_ready) return;
+    if (app->rebirth_page) {
+        rebirth_draw(c, app, now_ms);
+        return;
+    }
     const Pet *p = &app->pet;
     int fw = gfx_font_w(FONT_BODY), ready = ready_forms(p), worn = worn_form(p);
     int sel = clamp_form(app->evolution_sel), fresh = count_new(p);
@@ -285,7 +290,7 @@ void evolution_draw(Canvas *c, const App *app, int64_t now_ms) {
     draw_button(c, x, BUTTON_Y, "B", line, true);
 }
 
-const char *evolution_hints(void) { return "D-pad browse  L2/R2 jump  A transform  B keep current  X pat"; }
+const char *evolution_hints(void) { return "D-pad forms L2/R2 jump A wear B back Y DNA/lives X pat"; }
 
 void evolution_open(App *app) {
     if (!app->pet_ready) return;
@@ -295,6 +300,7 @@ void evolution_open(App *app) {
     app->evolution_sel = new_after + 1 < ready ? new_after + 1 : worn_form(p);
     pet_seen_forms(p);
     app->evolution_open = true;
+    app->rebirth_page = 0;
     app->bubble_until_ms = 0;
 }
 
@@ -303,6 +309,7 @@ bool evolution_handle(App *app, Button b, int64_t now_ms) {
         app->evolution_open = false;
         return false;
     }
+    if (app->rebirth_page) return rebirth_handle(app, b, now_ms);
     Pet *p = &app->pet;
     int sel = clamp_form(app->evolution_sel), worn = worn_form(p);
     char msg[64], name[24], need[16];
@@ -313,6 +320,9 @@ bool evolution_handle(App *app, Button b, int64_t now_ms) {
         app->bubble_until_ms = 0;
         return false;
     case PAD_X: return false; /* still pats */
+    case PAD_Y:
+        rebirth_open(app, now_ms);
+        return true;
     case PAD_B: /* keep the current form */
         app->evolution_open = false;
         app->bubble_until_ms = 0;

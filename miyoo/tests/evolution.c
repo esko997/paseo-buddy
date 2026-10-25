@@ -38,7 +38,7 @@ static void eat(Pet *p, const char *ledger, Family family, int64_t tokens, int64
 static void adult(Pet *p, const char *name, Family family, int64_t xp) {
     pet_init(p, name, NOW);
     eat(p, "grow", family, xp, NOW);
-    assert(p->stage == STAGE_ADULT && p->adult_family == family && p->xp == xp);
+    assert(p->stage == STAGE_ADULT && p->adult_family == family && p->xp == xp && p->life_xp == xp);
 }
 
 static void write_file(const char *text) {
@@ -64,8 +64,10 @@ static void old_save_migration(void) {
     assert(p.form == 0 && p.forms_seen == 0);
     assert(p.dna != 0 && p.dna == born.dna && pet_dna(&p) == p.dna);
     assert(pet_forms_available(&p) == 4);
-    /* Old progress and outfits are untouched. */
+    /* Old progress and outfits are untouched; the original life is the whole lifetime. */
     assert(p.xp == 5000000 && p.stage == STAGE_ADULT && p.adult_family == FAM_GPT);
+    assert(p.generation == 1 && p.inherited_trait == -1 && p.life_xp == p.xp && p.life_born == p.born);
+    assert(memcmp(p.life_diet, p.diet, sizeof p.diet) == 0);
     assert(pet_has(&p, U_SPROUT) && pet_has(&p, U_GLASSES) && pet_has(&p, U_SHINY));
     assert(pet_worn(&p, WEAR_HAT) == U_SPROUT && pet_worn(&p, WEAR_FACE) == U_GLASSES);
     assert(pet_worn(&p, WEAR_SHINY) == U_SHINY);
@@ -73,6 +75,7 @@ static void old_save_migration(void) {
     /* A later save preserves the seeded DNA. */
     assert(pet_save(&p, path) && pet_load(&q, path));
     assert(q.dna == p.dna && q.form == 0 && q.forms_seen == 0 && !pet_save_needed(&p, &q));
+    assert(q.generation == 1 && q.life_xp == 5000000 && q.life_born == p.born && q.inherited_trait == -1);
     assert(same_forms(&p, &q));
 
     /* The fallback never looks at the find sequence: a different (or missing) find_rng, same DNA. */
@@ -169,15 +172,20 @@ static void thresholds(void) {
     p.stage = STAGE_ADULT;
     for (int form = 1; form < PET_FORMS; form++) {
         assert(pet_form_threshold(form) > pet_form_threshold(form - 1));
-        p.xp = pet_form_threshold(form) - 1;
+        p.life_xp = pet_form_threshold(form) - 1;
         assert(pet_forms_available(&p) == form);
-        p.xp = pet_form_threshold(form);
+        p.life_xp = pet_form_threshold(form);
         assert(pet_forms_available(&p) == form + 1);
     }
-    p.xp = INT64_MAX;
+    p.life_xp = INT64_MAX;
     assert(pet_forms_available(&p) == PET_FORMS);
     p.stage = STAGE_TEEN;
     assert(pet_forms_available(&p) == 1); /* XP alone never unlocks forms before adulthood */
+    /* Forms follow the current life: lifetime XP from earlier lives never unlocks them. */
+    p.stage = STAGE_ADULT;
+    p.xp = INT64_MAX;
+    p.life_xp = pet_form_threshold(2) - 1;
+    assert(pet_forms_available(&p) == 2);
 
     /* Through real meals: one token short stays a teen with only the original. */
     pet_init(&p, "Steps", NOW);

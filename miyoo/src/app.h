@@ -91,6 +91,21 @@ typedef struct {
     bool evolution_open;
     int evolution_sel;
 
+    /* DNA Rewrite overlay of the forms browser (rebirth_view.c owns the behaviour). rebirth_page:
+     * 0 closed, 1 hub, 2 trait preview, 3 confirmation, 4 lineage album. The candidate next life
+     * and the album's one archived life are cached here on input, never per frame; neither is ever
+     * written into `pet`, which only pet_rewrite_commit (Y on the confirmation) replaces. */
+    int rebirth_page;
+    int rebirth_trait; /* trait field 0..6 (body..motion) the next life inherits */
+    bool rebirth_preview_ok;
+    Pet rebirth_preview;         /* pet_rewrite_preview(pet, rebirth_trait), valid if rebirth_preview_ok */
+    char rebirth_error[128];     /* last failed commit, shown on the confirmation page */
+    uint32_t rebirth_album_gen;  /* past life shown, 1..generation-1; 0 = none loaded */
+    int rebirth_album_form;      /* previewed form of that life, 0..its forms available-1 */
+    bool rebirth_album_ok;       /* rebirth_album holds rebirth_album_gen's archive */
+    Pet rebirth_album;           /* read only: never equipped onto or merged into `pet` */
+    char rebirth_album_err[128]; /* why rebirth_album_gen could not be shown */
+
     /* Today across all bridges (bridge-local day), for the den's ATM. Computed by main.c from
      * each Feed's `today` line; only bridges reporting the newest day count. */
     int64_t day_tokens;

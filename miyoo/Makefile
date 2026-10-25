@@ -1,4 +1,4 @@
-CORE := src/main.c src/ui.c src/pet_view.c src/evolution_view.c src/morphology.c src/appearance.c src/gfx.c src/feed.c src/net.c src/pet.c src/scene.c src/audio.c src/usage.c
+CORE := src/main.c src/ui.c src/pet_view.c src/evolution_view.c src/rebirth_view.c src/rewrite.c src/morphology.c src/appearance.c src/gfx.c src/feed.c src/net.c src/pet.c src/scene.c src/audio.c src/usage.c
 HDRS := $(wildcard src/*.h)
 WARN := -Wall -Wextra -Wno-unused-parameter
 LIBS := -lm -lpthread
@@ -24,11 +24,13 @@ build/pager-host: $(CORE) src/plat_miyoo.c $(HDRS)
 	$(CC) -O2 -g $(WARN) -o $@ $(CORE) src/plat_miyoo.c $(LIBS)
 
 # Collection migration, duplicate-free finds, persistence and appearance clipping.
-test: build/collection-test build/appearance-test build/evolution-test build/morphology-test
+test: build/collection-test build/appearance-test build/evolution-test build/morphology-test build/rebirth-test build/rewrite-test
 	./build/collection-test
 	./build/appearance-test
 	./build/evolution-test
 	./build/morphology-test
+	./build/rebirth-test
+	./build/rewrite-test
 build/collection-test: tests/collection.c src/pet.c src/pet.h src/feed.h
 	@mkdir -p build
 	$(CC) -O2 -g $(WARN) -Isrc -o $@ tests/collection.c src/pet.c
@@ -41,6 +43,12 @@ build/evolution-test: tests/evolution.c src/pet.c src/pet.h src/feed.h
 build/morphology-test: tests/morphology.c src/morphology.c src/gfx.c src/pet.c src/feed.c $(HDRS)
 	@mkdir -p build
 	$(CC) -O2 -g $(WARN) -Isrc -o $@ tests/morphology.c src/morphology.c src/gfx.c src/pet.c src/feed.c -lm
+build/rebirth-test: tests/rebirth.c src/pet.c $(HDRS)
+	@mkdir -p build
+	$(CC) -O2 -g $(WARN) -Isrc -o $@ tests/rebirth.c src/pet.c
+build/rewrite-test: tests/rewrite.c src/rewrite.c src/pet.c $(HDRS)
+	@mkdir -p build
+	$(CC) -O2 -g $(WARN) -Isrc -o $@ tests/rewrite.c src/rewrite.c src/pet.c
 
 # armhf binary for the Miyoo Mini Plus (run via ./build-miyoo.sh if you lack the cross compiler).
 # Dynamically linked on purpose: Onion's LD_PRELOAD=libpadsp.so (sound) only hooks dynamic binaries.

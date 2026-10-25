@@ -1,5 +1,5 @@
 #pragma once
-/* The pet's natural colours and its generated adult forms. Colours blend the lifetime diet of every
+/* The pet's natural colours and its generated adult forms. Colours blend the current life's diet of every
  * model family; forms 1..PET_FORMS-1 are composed from hand-drawn 16x16 parts chosen by the inherited
  * PetTraits (pet.h). Form 0 and every stage before adult keep the classic sprites. Everything works
  * on caller-provided storage: no allocation and no Pet copies. */
@@ -14,7 +14,7 @@
 #pragma GCC diagnostic pop
 
 /* Natural (uncoated) palette: PALETTES mixed channel by channel, weighted by the pet's positive
- * lifetime diet per family; PALETTES[PAL_UNFED] before it has eaten. Deterministic, safe for any
+ * current-life diet per family; PALETTES[PAL_UNFED] before this life has eaten. Deterministic, safe for any
  * int64 totals, and it follows the current diet at every stage (adults included). */
 void morphology_palette(const Pet *p, Palette *out);
 /* The same diet weighting over any table indexed like PALETTES (5 entries, PAL_UNFED last), e.g. the

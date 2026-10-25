@@ -318,7 +318,9 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
     }
     ensure_pet(app);
     if (app->pet_ready) {
+        int64_t life_before = app->pet.life_xp;
         FeedResult r = pet_feed(&app->pet, f, app_now(app), app->tz_offset);
+        int64_t eaten = app->pet.life_xp - life_before;
         char msg[64];
         if (r.hatched) {
             snprintf(msg, sizeof msg, "Hatched! Hi, I'm %s!", app->pet.name);
@@ -332,9 +334,9 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
             emit(app, EV_EVOLVED, -1, NULL, pet_favorite(&app->pet), app->pet.stage, now_ms);
             cue(app, SFX_EVOLVE);
             g_save_now = true;
-        } else if (r.tokens > 0 && !first_alert) {
+        } else if (eaten > 0 && !first_alert) {
             char tok[16];
-            format_tokens(r.tokens, tok, sizeof tok);
+            format_tokens(eaten, tok, sizeof tok);
             snprintf(msg, sizeof msg, "Nom! +%s tokens", tok);
             say(app, msg, now_ms);
             if (!out.raised) cue(app, SFX_NOM);

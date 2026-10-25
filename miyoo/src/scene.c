@@ -830,13 +830,14 @@ static void draw_hud(Canvas *c, const App *app, int64_t now) {
     morphology_palette(p, &pal);
     gfx_text_fit(c, FONT_BIG, 14, 46, TEXT, p->name[0] ? p->name : "Pet", 186);
     char xp[16], line[40];
-    format_tokens(p->xp, xp, sizeof xp);
+    format_tokens(p->life_xp, xp, sizeof xp);
     int w = gfx_text(c, FONT_BODY, 14, 80, pal.light, stage_name(p->stage), 0);
     snprintf(line, sizeof line, " %s tok", xp);
     gfx_text(c, FONT_BODY, 14 + w, 80, DIM, line, 0);
 
     int64_t next = stage_threshold(p->stage);
     int64_t prev = p->stage == STAGE_EGG ? 0 : stage_threshold((Stage)(p->stage - 1));
+    if (p->generation > 1 && p->stage == STAGE_BABY) prev = 0;
     if (p->stage == STAGE_ADULT) {
         int available = pet_forms_available(p);
         next = pet_form_threshold(available);
@@ -844,7 +845,7 @@ static void draw_hud(Canvas *c, const App *app, int64_t now) {
     }
     int segs = 12, full = segs, partial = 0;
     if (next > prev) {
-        int64_t num = (p->xp - prev) * segs * 4;
+        int64_t num = (p->life_xp - prev) * segs * 4;
         int64_t q = num / (next - prev);
         if (q < 0) q = 0;
         if (q > segs * 4) q = segs * 4;

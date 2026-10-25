@@ -7,6 +7,7 @@
 #include "cosmetics.h"
 #include "evolution_view.h"
 #include "morphology.h"
+#include "rebirth_view.h"
 #include "sprites.h"
 #include "theme.h"
 
@@ -314,16 +315,17 @@ double pet_xp_progress(const Pet *p, char *buf, size_t len) {
     int available = pet_forms_available(p);
     int64_t next = p->stage == STAGE_ADULT ? pet_form_threshold(available) : stage_threshold(p->stage);
     char have[16], need[16];
-    format_tokens(p->xp, have, sizeof have);
+    format_tokens(p->life_xp, have, sizeof have);
     if (!next) {
         snprintf(buf, len, "%s tok", have);
         return 1;
     }
     int64_t prev = p->stage == STAGE_EGG ? 0 : stage_threshold((Stage)(p->stage - 1));
+    if (p->generation > 1 && p->stage == STAGE_BABY) prev = 0;
     if (p->stage == STAGE_ADULT) prev = pet_form_threshold(available - 1);
     format_tokens(next, need, sizeof need);
     snprintf(buf, len, "%s/%s", have, need);
-    return (double)(p->xp - prev) / (double)(next - prev);
+    return (double)(p->life_xp - prev) / (double)(next - prev);
 }
 
 const char *pet_mood_line(const App *app, int64_t now) {
@@ -358,9 +360,10 @@ static void draw_stats(Canvas *c, const App *app, int64_t now_ms) {
     char line[96];
     gfx_text(c, FONT_BIG, x, y, TEXT, p->name, 0);
     y += 36;
-    int64_t days = (now - p->born) / 86400;
-    if (days < 1) snprintf(line, sizeof line, "%s, born today", stage_name(p->stage));
-    else snprintf(line, sizeof line, "%s, %lld day%s old", stage_name(p->stage), (long long)days, days == 1 ? "" : "s");
+    int64_t days = (now - p->life_born) / 86400;
+    if (days < 1) snprintf(line, sizeof line, "Life %u: %s, born today", p->generation, stage_name(p->stage));
+    else snprintf(line, sizeof line, "Life %u: %s, %lld day%s", p->generation, stage_name(p->stage),
+                  (long long)days, days == 1 ? "" : "s");
     gfx_text(c, FONT_BODY, x, y, DIM, line, 0);
     y += 24;
     const char *say = now_ms < app->bubble_until_ms ? app->bubble : pet_mood_line(app, now);
@@ -384,15 +387,17 @@ static void draw_stats(Canvas *c, const App *app, int64_t now_ms) {
     stat_line(c, x, y + 100, "Wardrobe", val);
 
     y = HEADER_H + 250;
-    gfx_text(c, FONT_BODY, 24, y, TEXT, "DIET (output tokens eaten)", 0);
+    format_tokens(p->xp, tok, sizeof tok);
+    snprintf(line, sizeof line, "DIET: this life     Lifetime: %s tokens", tok);
+    gfx_text(c, FONT_BODY, 24, y, TEXT, line, 0);
     y += 28;
     int64_t most = 1;
     for (int i = 0; i < N_FAMILIES; i++)
-        if (p->diet[i] > most) most = p->diet[i];
+        if (p->life_diet[i] > most) most = p->life_diet[i];
     for (int i = 0; i < N_FAMILIES; i++, y += 26) {
-        format_tokens(p->diet[i], tok, sizeof tok);
+        format_tokens(p->life_diet[i], tok, sizeof tok);
         gfx_text(c, FONT_BODY, 24, y, DIM, family_name((Family)i), 0);
-        gfx_bar(c, 110, y + 5, 360, 10, (double)p->diet[i] / (double)most, FAINT, PALETTES[i].body);
+        gfx_bar(c, 110, y + 5, 360, 10, (double)p->life_diet[i] / (double)most, FAINT, PALETTES[i].body);
         gfx_text(c, FONT_BODY, 484, y, TEXT, tok, 0);
     }
     int forms = pet_forms_available(p);
@@ -734,6 +739,7 @@ void pet_screen_draw(Canvas *c, const App *app, int64_t now_ms) {
 }
 
 const char *pet_screen_hints(const App *app) {
+    if (app->evolution_open && app->rebirth_page) return rebirth_hints(app);
     if (app->pet_ready && app->evolution_open) return evolution_hints();
     if (app->pet_ready && app->wardrobe_open && book_open) return "D-pad pick set  L2/R2 page  Y/B wardrobe  X pat";
     if (app->pet_ready && app->wardrobe_open) return "D-pad browse  L2/R2 page  A on/off  Y book  B close  X pat";

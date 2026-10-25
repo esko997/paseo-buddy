@@ -13,7 +13,7 @@ static uint32_t palette_field(const Palette *pal, int f) {
 void morphology_mix(const Pet *p, const Palette table[5], Palette *out) {
     uint64_t w[N_FAMILIES], top = 0;
     for (int i = 0; i < N_FAMILIES; i++) {
-        w[i] = p->diet[i] > 0 ? (uint64_t)p->diet[i] : 0;
+        w[i] = p->life_diet[i] > 0 ? (uint64_t)p->life_diet[i] : 0;
         if (w[i] > top) top = w[i];
     }
     if (!top) {
@@ -21,7 +21,7 @@ void morphology_mix(const Pet *p, const Palette table[5], Palette *out) {
         return;
     }
     /* Scale every weight alike until each fits 32 bits: sums and products below stay far from overflow
-     * and equal proportions give equal colours however large the lifetime totals get. */
+     * and equal proportions give equal colours however large this life's totals get. */
     while (top >> 32) {
         for (int i = 0; i < N_FAMILIES; i++) w[i] >>= 1;
         top >>= 1;

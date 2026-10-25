@@ -426,11 +426,11 @@ ItemSet pet_check_unlocks(Pet *p, int64_t now, int32_t tz_offset) {
     return fresh;
 }
 
-/* ---- evolution: generated adult forms, unlocked by lifetime XP and switched freely ------------ */
+/* ---- evolution: generated adult forms, unlocked by current-life XP and switched freely -------- */
 
 #define FIRST_FORM_XP 2000000 /* stage_threshold(STAGE_TEEN): form 1 is ready on reaching adulthood */
 #define FORM_STEP_XP 500000
-#define N_TRAITS 7
+#define N_TRAITS PET_TRAITS
 
 /* Fixed at birth from name and birth time; its own hash, so it never follows the find sequence. */
 static uint64_t dna_seed(const Pet *p) {
@@ -450,8 +450,13 @@ int64_t pet_form_threshold(int form) {
 int pet_forms_available(const Pet *p) {
     if (p->stage < STAGE_ADULT) return 1;
     int n = 1;
-    while (n < PET_FORMS && p->xp >= pet_form_threshold(n)) n++;
+    while (n < PET_FORMS && p->life_xp >= pet_form_threshold(n)) n++;
     return n;
+}
+
+/* The trait every form of this life keeps from the previous life's final form, or -1. */
+static int kept_trait(const Pet *p) {
+    return p->inherited_trait >= 0 && p->inherited_trait < N_TRAITS && p->inherited_value < 3 ? p->inherited_trait : -1;
 }
 
 PetTraits pet_form_traits(const Pet *p, int form) {
@@ -462,14 +467,25 @@ PetTraits pet_form_traits(const Pet *p, int form) {
     uint64_t x = splitmix64(&h);
     uint8_t v[N_TRAITS];
     for (int i = 0; i < N_TRAITS; i++, x /= 3) v[i] = (uint8_t)(x % 3);
-    int first = (int)(x % N_TRAITS); /* which trait changes first, then cyclically */
+    /* Fields that change from form to form: all seven, or the six besides an inherited trait.
+     * Without one this is exactly the original sequence (order is the identity). */
+    int kept = kept_trait(p), order[N_TRAITS], n = 0;
+    for (int i = 0; i < N_TRAITS; i++)
+        if (i != kept) order[n++] = i;
+    if (kept >= 0) v[kept] = p->inherited_value;
+    int first = (int)(x % (uint64_t)n); /* which field changes first, then cyclically */
     for (int k = 2; k <= form; k++) {
-        int i = (first + k - 2) % N_TRAITS;
+        int i = order[(first + k - 2) % n];
         v[i] = (uint8_t)((v[i] + 1) % 3);
     }
     t.body = v[0], t.ears = v[1], t.tail = v[2], t.crown = v[3];
     t.wings = v[4], t.markings = v[5], t.motion = v[6];
     return t;
+}
+
+static uint8_t trait_value(PetTraits t, int trait) {
+    const uint8_t v[N_TRAITS] = {t.body, t.ears, t.tail, t.crown, t.wings, t.markings, t.motion};
+    return v[trait];
 }
 
 bool pet_choose_form(Pet *p, int form) {
@@ -483,10 +499,46 @@ void pet_seen_forms(Pet *p) {
     if (top > p->forms_seen) p->forms_seen = (uint8_t)top;
 }
 
+bool pet_rewrite_ready(const Pet *p) {
+    return p->generation >= 1 && p->generation < UINT32_MAX && pet_forms_available(p) == PET_FORMS;
+}
+
+/* The next life's DNA: from the old DNA and the new generation only, never 0 nor the old DNA. */
+static uint64_t rewrite_dna(const Pet *p) {
+    uint64_t old = pet_dna(p), dna;
+    uint64_t h = old ^ (UINT64_C(0xBB67AE8584CAA73B) * ((uint64_t)p->generation + 1));
+    do dna = splitmix64(&h);
+    while (!dna || dna == old);
+    return dna;
+}
+
+bool pet_rewrite_preview(const Pet *p, int trait, int64_t now, Pet *out) {
+    if (!pet_rewrite_ready(p) || trait < 0 || trait >= N_TRAITS || now <= 0 || now < p->life_born) return false;
+    Pet n = *p; /* lifetime totals, collection, equipment, finds, day counters and ledgers */
+    n.generation = p->generation + 1;
+    n.life_born = now;
+    n.life_xp = 0;
+    memset(n.life_diet, 0, sizeof n.life_diet);
+    n.stage = STAGE_BABY;
+    n.adult_family = FAM_OTHER;
+    n.form = 0;
+    n.forms_seen = 0;
+    n.cheer_until = 0;
+    n.eating_until = 0;
+    for (int i = 0; i < PET_LEDGERS; i++) n.seen[i].life_armed = false;
+    n.dna = rewrite_dna(p);
+    n.inherited_trait = (int8_t)trait;
+    n.inherited_value = trait_value(pet_form_traits(p, PET_FORMS - 1), trait);
+    *out = n;
+    return true;
+}
+
 void pet_init(Pet *p, const char *name, int64_t now) {
     memset(p, 0, sizeof *p);
     snprintf(p->name, sizeof p->name, "%s", name);
-    p->born = now;
+    p->born = p->life_born = now;
+    p->generation = 1;
+    p->inherited_trait = -1;
     p->stage = STAGE_EGG;
     p->adult_family = FAM_OTHER;
     memset(p->equipped, -1, sizeof p->equipped);
@@ -513,8 +565,8 @@ Family pet_favorite(const Pet *p) {
     Family best = FAM_OTHER;
     int64_t most = 0;
     for (int i = 0; i < N_FAMILIES; i++) {
-        if (p->diet[i] > most) {
-            most = p->diet[i];
+        if (p->life_diet[i] > most) {
+            most = p->life_diet[i];
             best = (Family)i;
         }
     }
@@ -544,13 +596,18 @@ FeedResult pet_feed(Pet *p, const Feed *f, int64_t now, int32_t tz_offset) {
     /* Finds count only growth past counts known since finds existed: never a new bridge's history
      * nor what a ledger carried over from an older save did before the upgrade. */
     bool fresh = !backlog && s->finds_armed;
+    /* The original life eats everything; later lives only growth past counts known this life. */
+    bool life = p->generation <= 1 || (!backlog && s->life_armed);
     s->finds_armed = true;
+    s->life_armed = true;
     s->last_seen = now;
+    int64_t life_tokens = 0;
     for (int i = 0; i < N_FAMILIES; i++) {
         int64_t d = f->fed[i] - s->fed[i];
         if (d < 0) d = 0; /* ledger shrank: just rebaseline */
         p->diet[i] += d;
         r.tokens += d;
+        if (life) p->life_diet[i] += d, life_tokens += d;
         s->fed[i] = f->fed[i];
     }
     r.turns = f->turns > s->turns ? f->turns - s->turns : 0;
@@ -562,15 +619,16 @@ FeedResult pet_feed(Pet *p, const Feed *f, int64_t now, int32_t tz_offset) {
     pet_roll_day(p, now, tz_offset);
     Stage before = p->stage;
     p->xp += r.tokens;
+    p->life_xp += life_tokens;
     if (!backlog) {
         p->today_tokens += r.tokens;
         p->today_turns += r.turns;
         if (p->today_tokens > p->best_day_tokens) p->best_day_tokens = p->today_tokens;
     }
     p->lifetime_turns += r.turns;
-    if (r.tokens > 0) p->eating_until = now + EAT_ANIM_S;
+    if (life_tokens > 0) p->eating_until = now + EAT_ANIM_S;
     if (r.turns > 0) p->cheer_until = now + CHEER_S;
-    while (p->stage < STAGE_ADULT && p->xp >= THRESHOLDS[p->stage]) p->stage++;
+    while (p->stage < STAGE_ADULT && p->life_xp >= THRESHOLDS[p->stage]) p->stage++;
     if (p->stage == STAGE_ADULT && before != STAGE_ADULT) p->adult_family = pet_favorite(p);
     r.hatched = before == STAGE_EGG && p->stage > STAGE_EGG;
     r.evolved = !r.hatched && p->stage != before;
@@ -594,12 +652,15 @@ bool pet_save_needed(const Pet *now, const Pet *saved) {
         memcmp(now->diet, saved->diet, sizeof now->diet) != 0 ||
         memcmp(now->equipped, saved->equipped, sizeof now->equipped) != 0 || now->find_points != saved->find_points ||
         now->find_tokens != saved->find_tokens || now->find_day != saved->find_day || now->find_rng != saved->find_rng ||
-        now->dna != saved->dna || now->form != saved->form || now->forms_seen != saved->forms_seen)
+        now->dna != saved->dna || now->form != saved->form || now->forms_seen != saved->forms_seen ||
+        now->life_xp != saved->life_xp || now->life_born != saved->life_born ||
+        memcmp(now->life_diet, saved->life_diet, sizeof now->life_diet) != 0 || now->generation != saved->generation ||
+        now->inherited_trait != saved->inherited_trait || now->inherited_value != saved->inherited_value)
         return true;
     for (int i = 0; i < PET_LEDGERS; i++) {
         const LedgerSeen *a = &now->seen[i], *b = &saved->seen[i];
         if (strcmp(a->ledger_id, b->ledger_id) || memcmp(a->fed, b->fed, sizeof a->fed) || a->turns != b->turns ||
-            a->errors != b->errors || a->finds_armed != b->finds_armed)
+            a->errors != b->errors || a->finds_armed != b->finds_armed || a->life_armed != b->life_armed)
             return true;
     }
     return false;
@@ -622,8 +683,9 @@ Mood pet_mood(const Pet *p, int64_t now, int32_t tz_offset, int waiting, int run
 _Static_assert(LEGACY_EQUIPPED != N_WEAR && WEAR_SHINY + 1 < LEGACY_EQUIPPED, "legacy layout must stay detectable");
 
 bool pet_save(const Pet *p, const char *path) {
-    char tmp[512];
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    char tmp[768];
+    int len = snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    if (len < 0 || (size_t)len >= sizeof tmp) return false; /* never write beside a truncated name */
     FILE *f = fopen(tmp, "w");
     if (!f) return false;
     fprintf(f, "name=%s\nborn=%lld\nxp=%lld\nstage=%d\nadult_family=%d\n", p->name, (long long)p->born,
@@ -642,14 +704,19 @@ bool pet_save(const Pet *p, const char *path) {
     fprintf(f, "\nfind_points=%lld\nfind_tokens=%lld\nfind_day=%lld\nfind_rng=%llx\n", (long long)p->find_points,
             (long long)p->find_tokens, (long long)p->find_day, (unsigned long long)p->find_rng);
     fprintf(f, "dna=%llx\nform=%d\nforms_seen=%d\n", (unsigned long long)p->dna, p->form, p->forms_seen);
+    fprintf(f, "generation=%lu\nlife_born=%lld\nlife_xp=%lld\n", (unsigned long)p->generation, (long long)p->life_born,
+            (long long)p->life_xp);
+    fprintf(f, "life_diet=%lld %lld %lld %lld\n", (long long)p->life_diet[0], (long long)p->life_diet[1],
+            (long long)p->life_diet[2], (long long)p->life_diet[3]);
+    fprintf(f, "inherited_trait=%d\ninherited_value=%d\n", p->inherited_trait, p->inherited_value);
     for (int i = 0; i < PET_LEDGERS; i++) {
         const LedgerSeen *s = &p->seen[i];
         if (!s->ledger_id[0]) continue;
-        fprintf(f, "seen=%s %lld %lld %lld %lld %lld %lld %lld %d\n", s->ledger_id, (long long)s->fed[0],
+        fprintf(f, "seen=%s %lld %lld %lld %lld %lld %lld %lld %d %d\n", s->ledger_id, (long long)s->fed[0],
                 (long long)s->fed[1], (long long)s->fed[2], (long long)s->fed[3], (long long)s->turns,
-                (long long)s->errors, (long long)s->last_seen, s->finds_armed);
+                (long long)s->errors, (long long)s->last_seen, s->finds_armed, s->life_armed);
     }
-    bool ok = fflush(f) == 0 && fsync(fileno(f)) == 0;
+    bool ok = !ferror(f) && fflush(f) == 0 && fsync(fileno(f)) == 0;
     ok = fclose(f) == 0 && ok;
     return ok && rename(tmp, path) == 0;
 }
@@ -663,10 +730,14 @@ bool pet_load(Pet *p, const char *path) {
     p->find_day = -1;                            /* files from before finds: the welcome find is pending */
     bool have_rng = false;
     int form = 0, forms_seen = 0; /* files from before forms: the original look, nothing browsed */
+    /* Files from before DNA rewrites: the original life, which is the whole lifetime. */
+    bool have_life_born = false, have_life_xp = false, have_life_diet = false;
+    unsigned long long generation = 1;
+    int inherited_trait = -1, inherited_value = 0;
     char line[256];
     int n_seen = 0;
     long long a, b, c, d, e, g, h;
-    int armed;
+    int armed, life_armed;
     char id[16];
     while (fgets(line, sizeof line, f)) {
         line[strcspn(line, "\n")] = 0;
@@ -692,7 +763,15 @@ bool pet_load(Pet *p, const char *path) {
         else if (!strcmp(k, "dna")) p->dna = strtoull(v, NULL, 16);
         else if (!strcmp(k, "form")) form = atoi(v);
         else if (!strcmp(k, "forms_seen")) forms_seen = atoi(v);
-        else if (!strcmp(k, "unlocked")) { /* one hex word per 64 ids, lowest first; older files have one */
+        else if (!strcmp(k, "generation")) generation = strtoull(v, NULL, 10);
+        else if (!strcmp(k, "life_born")) p->life_born = atoll(v), have_life_born = true;
+        else if (!strcmp(k, "life_xp")) p->life_xp = atoll(v), have_life_xp = true;
+        else if (!strcmp(k, "inherited_trait")) inherited_trait = atoi(v);
+        else if (!strcmp(k, "inherited_value")) inherited_value = atoi(v);
+        else if (!strcmp(k, "life_diet") && sscanf(v, "%lld %lld %lld %lld", &a, &b, &c, &d) == 4) {
+            p->life_diet[0] = a, p->life_diet[1] = b, p->life_diet[2] = c, p->life_diet[3] = d;
+            have_life_diet = true;
+        } else if (!strcmp(k, "unlocked")) { /* one hex word per 64 ids, lowest first; older files have one */
             char *end;
             for (int w = 0; w < ITEMSET_BITS / 64; w++, v = end) {
                 unsigned long long bits = strtoull(v, &end, 16);
@@ -712,16 +791,27 @@ bool pet_load(Pet *p, const char *path) {
         } else if (!strcmp(k, "diet") && sscanf(v, "%lld %lld %lld %lld", &a, &b, &c, &d) == 4) {
             p->diet[0] = a, p->diet[1] = b, p->diet[2] = c, p->diet[3] = d;
         } else if (!strcmp(k, "seen") && n_seen < PET_LEDGERS) {
-            int got = sscanf(v, "%15s %lld %lld %lld %lld %lld %lld %lld %d", id, &a, &b, &c, &d, &e, &g, &h, &armed);
+            int got = sscanf(v, "%15s %lld %lld %lld %lld %lld %lld %lld %d %d", id, &a, &b, &c, &d, &e, &g, &h, &armed,
+                             &life_armed);
             if (got < 8) continue;
             LedgerSeen *s = &p->seen[n_seen++];
             snprintf(s->ledger_id, sizeof s->ledger_id, "%s", id);
             s->fed[0] = a, s->fed[1] = b, s->fed[2] = c, s->fed[3] = d;
             s->turns = e, s->errors = g, s->last_seen = h;
-            s->finds_armed = got == 9 && armed; /* older files: counts may include pre-upgrade work */
+            s->finds_armed = got >= 9 && armed; /* older files: counts may include pre-upgrade work */
+            s->life_armed = got == 10 && life_armed; /* older files: the original life ignores it */
         }
     }
     fclose(f);
+    if (!have_life_born) p->life_born = p->born;
+    if (!have_life_xp) p->life_xp = p->xp;
+    if (!have_life_diet) memcpy(p->life_diet, p->diet, sizeof p->life_diet);
+    p->generation = generation < 1 ? 1 : generation > UINT32_MAX ? UINT32_MAX : (uint32_t)generation;
+    /* The original life inherits nothing; a bad record falls back to the plain form sequence. */
+    bool inherits = p->generation > 1 && inherited_trait >= 0 && inherited_trait < N_TRAITS && inherited_value >= 0 &&
+                    inherited_value < 3;
+    p->inherited_trait = (int8_t)(inherits ? inherited_trait : -1);
+    p->inherited_value = (uint8_t)(inherits ? inherited_value : 0);
     for (int s = 0; s < N_WEAR; s++) /* only owned items, in their own slot */
         if (pet_worn(p, s) < 0) p->equipped[s] = -1;
     if (!have_rng) p->find_rng = find_seed(p); /* first load since finds: no backlog, fresh sequence */

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs build/PaseoPager on a Miyoo over SSH (Onion: Apps > Tweaks > Network > SSH; user onion).
-# Keeps the device's pager.cfg and pet.txt. Safe while the pager is running: files are staged and
+# Keeps the device's pager.cfg, pet.txt and lineage archives. Safe while the pager is running: files are staged and
 # renamed into place, and the running copy keeps going until you quit and reopen it.
 # Usage: ./deploy.sh [user@host]
 set -euo pipefail
@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 target=${1:-onion@192.168.1.190}
 ./build-miyoo.sh >/dev/null
 # tar over ssh: works with dropbear whether or not an sftp/scp server is installed.
-tar -C build --exclude=PaseoPager/pet.txt --exclude=PaseoPager/pager.cfg -cf - PaseoPager |
+tar -C build --exclude='PaseoPager/pet.txt*' --exclude=PaseoPager/pager.cfg -cf - PaseoPager |
   ssh "$target" 'set -e
     app=/mnt/SDCARD/App/PaseoPager stage=/mnt/SDCARD/App/.PaseoPager.new
     rm -rf "$stage" && mkdir -p "$stage" && tar -C "$stage" -xf -

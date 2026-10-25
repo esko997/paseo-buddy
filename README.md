@@ -155,14 +155,14 @@ The pet asks nothing of you. There is no hunger, no decay, and no sickness, and 
 - It watches when agents are working.
 - It naps at night.
 
-It grows by lifetime tokens eaten: Egg → Baby at 5k, Kid at 100k, Teen at 500k, Adult at 2M.
-Its natural colors blend all four model-family diets (Claude, GPT, Gemini, Other), weighted by lifetime
+It grows by tokens eaten in its **current life**: Egg → Baby at 5k, Kid at 100k, Teen at 500k, Adult at 2M.
+Its natural colors blend all four model-family diets (Claude, GPT, Gemini, Other), weighted by this life's
 output tokens eaten, with a gentle light-to-dark body gradient. There is no abrupt palette swap when
 one family overtakes another, and adult colors keep responding to food. A wardrobe coat overrides
 the natural gradient; the shiny coat uses a brighter version of the diet blend.
 
 **Inherited adult forms.** The original look is always form 0. Fifteen generated forms become ready
-at 2M, 3M, 5M, 8M, 12M, 17M, 23M, 30M, 38M, 47M, 57M, 68M, 80M, 93M, and 107M lifetime tokens.
+at 2M, 3M, 5M, 8M, 12M, 17M, 23M, 30M, 38M, 47M, 57M, 68M, 80M, 93M, and 107M tokens in each life.
 Each pet has saved DNA, independent of its random finds. The family that fed it most on reaching
 adulthood locks its lineage; later diet changes affect colors, not anatomy. The first generated
 form combines body, ears, tail, crown, wings, markings, and movement traits. Each later form inherits
@@ -179,10 +179,39 @@ Bodies share the wardrobe's face, hat, neck, and held-item anchors, so outfits s
 transformations. Hats hide crowns and the tops of ears. Old saves acquire deterministic DNA and keep
 their current original shape, outfits, and collection progress; mixed diets adopt the new blended colors.
 
+**DNA Rewrite and reincarnation.** The final form unlocks a reusable DNA Rewrite tool, separate from
+the cosmetic collection. Nothing happens automatically. On **Pet → A → Y**, open DNA Rewrite:
+
+- **A** begins a preview once this life reaches Form 15 (107M tokens).
+- **Left/Right** chooses one trait to inherit: body, ears, tail, crown, wings, markings, or movement.
+  The trait comes from the old **final Form 15**, even if a different form is currently worn.
+- **A** opens the confirmation screen. Only **Y** on that screen commits; **B** goes back.
+- The same named pet starts its next life as a **Baby**, not an Egg, with new DNA, zero growth,
+  and a fresh model-family diet. Its baby sprite stays classic; every generated adult form retains
+  the chosen trait while the other six develop from the new DNA and this life's adult family.
+- Lifetime tokens/diet, original birthday, turns, records, all cosmetics and outfits, banked finds,
+  and the daily find limit survive. Reopening the preview never rerolls the candidate DNA.
+- The first snapshot from **each bridge** after reincarnation establishes its feeding baseline.
+  Only subsequent token growth feeds the new life. Newly connected bridges likewise cannot
+  regrow the baby from their historical totals; those totals still count toward lifetime records.
+- The tool becomes ready again when the new life reaches 107M tokens.
+
+**Y** in the DNA Rewrite screen opens the read-only **lineage album**. **L2/R2** changes the archived
+life; **Left/Right** browses its reached forms. Each archive keeps that life's DNA, inherited trait,
+adult family, diet colors, and outfit. Past forms are memories, not a way to equip adult forms on
+the new baby.
+
+Archives are `pet.txt.life-1`, `pet.txt.life-2`, and so on beside `pet.txt`. Before a rewrite, the old
+life is saved and synced to storage; only then is the new baby saved and made current. A failed
+archive or replacement leaves the current pet unchanged and shows an error. Keep **both `pet.txt`
+and its `pet.txt.life-*` files** when backing up or moving your pet. Deployment preserves them.
+Existing saves migrate to life 1 with identical DNA, forms, growth, and diet.
+
 The Pet screen shows:
-- today's tokens and turns,
-- your best day, and
-- lifetime turns.
+- the current life number, age, growth, and diet,
+- lifetime tokens and turns,
+- today's tokens and turns, and
+- your best day.
 
 These are stats, not goals.
 
@@ -228,7 +257,7 @@ because the Miyoo's own clock can't be trusted.
 ```sh
 make -C miyoo desktop && PAGER_DIR=/path/with/pager.cfg miyoo/build/pager-desktop   # SDL2 window
 make -C miyoo host && PAGER_DIR=… miyoo/build/pager-host --shot out.ppm --screen agents|den|pet|detail [--sim-ms 3000]
-make -C miyoo test   # migration, finds, outfits, inherited forms, diet blends and rendering bounds
+make -C miyoo test   # migration, collection, forms, diet/render bounds, reincarnation and archive failure safety
 ```
 
 Desktop keys use the Miyoo's own keyboard codes, plus Z=A and X=B. Arrows are the D-pad, Enter is START,

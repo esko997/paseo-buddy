@@ -43,35 +43,43 @@ int main(void) {
     p.adult_family = FAM_CLAUDE;
     Palette endpoints[N_FAMILIES], mix, large;
     for (int family = 0; family < N_FAMILIES; family++) {
-        memset(p.diet, 0, sizeof p.diet);
-        p.diet[family] = 100;
+        memset(p.life_diet, 0, sizeof p.life_diet);
+        p.life_diet[family] = 100;
         morphology_palette(&p, &endpoints[family]);
         equal_palette(endpoints[family], PALETTES[family]);
     }
     for (int a = 0; a < N_FAMILIES; a++) {
         for (int b = a + 1; b < N_FAMILIES; b++) {
-            memset(p.diet, 0, sizeof p.diet);
-            p.diet[a] = p.diet[b] = 100;
+            memset(p.life_diet, 0, sizeof p.life_diet);
+            p.life_diet[a] = p.life_diet[b] = 100;
             morphology_palette(&p, &mix);
             close_colour(mix.body, endpoints[a].body, endpoints[b].body);
             close_colour(mix.light, endpoints[a].light, endpoints[b].light);
             close_colour(mix.dark, endpoints[a].dark, endpoints[b].dark);
             close_colour(mix.accent, endpoints[a].accent, endpoints[b].accent);
             /* Long-lived pets must retain the same mixture even when the sum exceeds INT64_MAX. */
-            p.diet[a] = p.diet[b] = INT64_MAX;
+            p.life_diet[a] = p.life_diet[b] = INT64_MAX;
             morphology_palette(&p, &large);
             equal_palette(large, mix);
         }
     }
     /* A change in the dominant provider changes colour gradually, not by choosing a new palette. */
-    memset(p.diet, 0, sizeof p.diet);
+    memset(p.life_diet, 0, sizeof p.life_diet);
     Palette before, after;
-    p.diet[0] = 1001; p.diet[1] = 1000; morphology_palette(&p, &before);
-    p.diet[0] = 1000; p.diet[1] = 1001; morphology_palette(&p, &after);
+    p.life_diet[0] = 1001; p.life_diet[1] = 1000; morphology_palette(&p, &before);
+    p.life_diet[0] = 1000; p.life_diet[1] = 1001; morphology_palette(&p, &after);
     for (int shift = 0; shift <= 16; shift += 8) {
         int delta = (int)((before.body >> shift) & 255) - (int)((after.body >> shift) & 255);
         assert(delta >= -1 && delta <= 1);
     }
+    /* Previous lives must never tint a fresh baby's natural colours. */
+    p.diet[FAM_CLAUDE] = INT64_MAX;
+    memset(p.life_diet, 0, sizeof p.life_diet);
+    morphology_palette(&p, &after);
+    equal_palette(after, PALETTES[PAL_UNFED]);
+    p.life_diet[FAM_GEMINI] = 100;
+    morphology_palette(&p, &after);
+    equal_palette(after, PALETTES[FAM_GEMINI]);
     puts("PASS diet mixture endpoints, blended provider crossover, and large lifetime totals");
     return 0;
 }

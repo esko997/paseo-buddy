@@ -2,5 +2,5 @@ node_modules/
 miyoo/build/
 # Device-local state: holds bridge tokens / your pet.
 pager.cfg
-pet.txt
+pet.txt*
 *.ppm
