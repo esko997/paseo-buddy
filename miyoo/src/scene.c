@@ -1476,9 +1476,19 @@ static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, i
     case ARM_UP:
     case ARM_STRETCH: break;
     }
-    if (a->ctx_pct >= CTX_WARN) { /* yellow flicker around the monitor */
-        bool on = L->calm ? (now / 1500) % 2 : hash_u((uint32_t)(now / 120) ^ h) % 5 != 0;
-        R(c, mx - 2, my - 2, 50, 36, on ? 0xf5c542 : 0x7a6a2a);
+    if (a->ctx_pct >= CTX_WARN) {
+        bool sleeping = a->bucket == B_DONE ||
+                        (fatigue == USAGE_FULL && (a->bucket == B_RUNNING || a->bucket == B_ATTENTION));
+        uint32_t rim = 0xf5c542;
+        if (sleeping) {
+            /* Four-second breath (eight at night), never fully dark. */
+            int phase = (int)(((now + ph) % (L->calm ? 8000 : 4000)) * 64 / (L->calm ? 8000 : 4000));
+            rim = lerp_col(0x7a6a2a, 0xc5a33a, 128 + isin(phase) * 2);
+        } else if (a->bucket == B_RUNNING) {
+            /* Slow, regular blink; urgent states keep a steady context rim. */
+            if (((now + ph) / (L->calm ? 2000 : 1000)) % 2) rim = 0x7a6a2a;
+        }
+        R(c, mx - 2, my - 2, 50, 36, rim);
     }
     R(c, mx, my, 46, 32, 0x2b2f3a);
     R(c, mx, my, 46, 1, 0x454b5c);

@@ -59,6 +59,9 @@ There are three screens. Use L/R to cycle between them:
   - An ATM in the corner shows today's tokens and estimated cost across all bridges. Big chunks of tokens
     print a receipt, which the pet tears off.
   - Workers start sweating when their context window passes 80%. Past 95% a warning sign appears on the desk.
+    The yellow context-warning monitor rim blinks slowly while working (one second bright, one second dim).
+    Sleeping bots get a softer four-second breathing glow instead, including bots asleep from exhausted
+    subscription fuel. Both animations run at half speed in night-dim mode; urgent states keep a steady rim.
   - The cost is Paseo's estimate at API prices (`~$`), not what a subscription actually bills.
 - **Pet**: the pet's stats and diet. Y opens the wardrobe.
 
