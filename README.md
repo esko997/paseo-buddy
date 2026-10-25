@@ -93,8 +93,13 @@ The pet also chirps when it eats, when you pat it, and when it hatches or evolve
 Cues are short and rate-limited. They are silent from 23:00 to 07:00 bridge time (`quiet_nights`).
 `volume = 0` turns them off.
 
-The first snapshot after launch never buzzes or chimes. Onion's power-button sleep freezes the app and
-drops Wi-Fi. The pager reconnects on wake, but it only pages you while it is awake.
+The first snapshot after launch never buzzes or chimes. On battery, Onion's power-button sleep freezes the
+app and drops Wi-Fi; the pager reconnects on wake, but it only pages you while it is awake. Plugged in,
+the power button just turns the screen off (see Always on).
+
+If no bridge has answered for 30 seconds, a red banner says why: either the Miyoo's own Wi-Fi is off
+(switch it back on in Onion's menu) or Wi-Fi is up but no bridge answers. Losing the connection buzzes
+once and wakes the screen.
 
 ### Always on
 

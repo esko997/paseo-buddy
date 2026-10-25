@@ -396,3 +396,13 @@ void plat_audio_close(void) {
     close(dsp_fd);
     dsp_fd = -1;
 }
+
+/* Onion unloads the Wi-Fi driver when Wi-Fi is switched off, so a missing wlan0 also means down. */
+bool plat_wifi_up(void) {
+    FILE *f = fopen("/sys/class/net/wlan0/operstate", "r");
+    if (!f) return false;
+    char state[16] = {0};
+    bool up = fgets(state, sizeof state, f) && !strncmp(state, "up", 2);
+    fclose(f);
+    return up;
+}

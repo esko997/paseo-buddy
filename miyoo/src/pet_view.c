@@ -343,7 +343,7 @@ static void draw_stats(Canvas *c, const App *app, int64_t now_ms) {
     format_tokens(today ? p->today_tokens : 0, tok, sizeof tok);
     int64_t turns = today ? p->today_turns : 0;
     snprintf(val, sizeof val, "%s tok, %lld turn%s", tok, (long long)turns, turns == 1 ? "" : "s");
-    stat_line(c, x, y + 28, "Today", val);
+    stat_line(c, x, y + 28, "Ate today", val);
     format_tokens(p->best_day_tokens, tok, sizeof tok);
     stat_line(c, x, y + 52, "Best day", tok);
     snprintf(val, sizeof val, "%lld", (long long)p->lifetime_turns);

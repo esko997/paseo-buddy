@@ -281,6 +281,16 @@ void ui_draw(const App *app, const Scene *scene, Canvas *c, int64_t now_ms) {
         draw_footer(c, "B back  UP/DOWN next agent");
         break;
     }
+    if (app->offline != ONLINE) {
+        /* Connection-lost banner over the top of the body, on every screen. */
+        const char *msg = app->offline == OFFLINE_WIFI ? "Wi-Fi is off: switch it on in Onion's menu"
+                                                       : "Can't reach any bridge (Wi-Fi is on)";
+        int y = HEADER_H + 6, h = 30;
+        bool pulse = (now_ms / 700) % 2;
+        gfx_rect(c, 12, y, SCREEN_W - 24, h, pulse ? 0x5a1f1a : 0x3d1714);
+        gfx_frame(c, 12, y, SCREEN_W - 24, h, 2, ALERT_COL);
+        gfx_text_fit(c, FONT_BODY, 24, y + 5, TEXT, msg, SCREEN_W - 48);
+    }
     /* anti-ghosting: the whole frame drifts around a +-2 px orbit */
     const int8_t *o = ORBIT[now_ms / ORBIT_STEP_MS % (int64_t)(sizeof ORBIT / sizeof ORBIT[0])];
     orbit_shift(c, o[0], o[1]);

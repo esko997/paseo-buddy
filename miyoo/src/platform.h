@@ -38,6 +38,9 @@ int plat_battery(void);
 /* True while external power (USB) is present, whether or not the battery is still charging.
  * Cheap (one PMIC register read on the Mini Plus), but poll it every few seconds, not per frame. */
 bool plat_on_power(void);
+/* True if the Wi-Fi interface is up with a carrier (Miyoo: wlan0 operstate). Desktop: always true
+ * unless PAGER_NO_WIFI is set. */
+bool plat_wifi_up(void);
 /* Battery care: on = charge target 4.1 V; off = back to 4.2 V if the target is our 4.1 V. Logs to stderr. */
 void plat_battery_care(bool on);
 /* Backlight level on Onion's 0..10 scale (the Miyoo writes the PWM duty; the desktop prints it). */

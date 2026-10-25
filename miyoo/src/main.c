@@ -19,6 +19,7 @@
 #define POWER_POLL_MS 15000
 #define UNLOCK_CHECK_MS 60000
 #define NIGHT_FRAME_MS 200 /* ~5 fps while dimmed for the night */
+#define OFFLINE_AFTER_MS 30000 /* every bridge unreachable this long -> connection-lost banner */
 
 static volatile sig_atomic_t g_running = 1;
 static void on_signal(int sig) {
@@ -26,7 +27,9 @@ static void on_signal(int sig) {
     g_running = 0;
 }
 
-static bool g_save_now;  /* a milestone (hatch, evolve, unlock) is saved right away */
+static bool g_save_now;  /* a milestone (hatch, evolve, unlock, wardrobe change) is saved right away */
+static int64_t g_started_ms; /* unlocks found while starting up (backlog catch-up) don't chime */
+#define STARTUP_QUIET_MS 15000
 static bool g_screen_on = true;
 
 static int64_t mono_ms(void) {
@@ -328,7 +331,8 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
             if (!out.raised) cue(app, SFX_NOM);
         }
         bool milestone = r.hatched || r.evolved;
-        announce_unlocks(app, r.unlocked, !milestone, first || milestone, now_ms);
+        bool starting = now_ms - g_started_ms < STARTUP_QUIET_MS;
+        announce_unlocks(app, r.unlocked, !milestone, starting || milestone, now_ms);
     }
     if (first_alert) {
         char msg[64];
@@ -403,7 +407,10 @@ static bool handle(App *app, Button b, int64_t now_ms) {
         ack_all(app);
         return true;
     }
-    if (app->screen == SCREEN_PET && pet_screen_handle(app, b, now_ms)) return true;
+    if (app->screen == SCREEN_PET && pet_screen_handle(app, b, now_ms)) {
+        g_save_now = true; /* wardrobe changes; saved only if something actually changed */
+        return true;
+    }
     if (app->screen == SCREEN_DETAIL) {
         if (b == PAD_B || b == PAD_A) app->screen = SCREEN_AGENTS;
         else if (b == PAD_UP) open_detail(app, app->sel - 1);
@@ -460,6 +467,9 @@ static int run_shot(App *app, const char *out, const char *screen, int sel, int 
     }
     if (app->pet_ready) announce_unlocks(app, pet_check_unlocks(&app->pet, app_now(app), app->tz_offset), true, true, t0);
     app->battery = plat_battery();
+    bool any_ok = false;
+    for (int i = 0; i < app->cfg.n_bridges; i++) any_ok |= app->link[i] == LINK_OK;
+    if (!any_ok) app->offline = plat_wifi_up() ? OFFLINE_BRIDGES : OFFLINE_WIFI; /* no 30 s grace in a snapshot */
     if (!strcmp(screen, "pet")) app->screen = SCREEN_PET;
     else if (!strcmp(screen, "den")) app->screen = SCREEN_DEN;
     else if (!strcmp(screen, "detail")) open_detail(app, sel);
@@ -482,6 +492,7 @@ static int run_shot(App *app, const char *out, const char *screen, int sel, int 
 
 int main(int argc, char **argv) {
     static App app;
+    g_started_ms = mono_ms();
     const char *shot = NULL, *screen = "agents";
     int sel = 0, sim_ms = 0;
     for (int i = 1; i < argc; i++) {
@@ -520,7 +531,8 @@ int main(int argc, char **argv) {
 
     int64_t last_render = 0, last_tick = 0, last_input = mono_ms(), last_battery = -60000, last_power = -60000;
     int64_t last_unlock = -1, last_night = 0;
-    bool on_power = false;
+    bool on_power = false, ever_online = false;
+    int64_t all_down_since = -1, last_wifi_check = 0;
     while (g_running) {
         int64_t now_ms = mono_ms();
         bool dirty = false;
@@ -540,6 +552,28 @@ int main(int argc, char **argv) {
             free(f);
             free(body);
             dirty = true;
+        }
+        /* Connection-lost banner: nothing reachable for a while. Says whether it's our own Wi-Fi. */
+        bool any_ok = false;
+        for (int i = 0; i < app.cfg.n_bridges; i++) any_ok |= app.link[i] == LINK_OK;
+        if (any_ok) {
+            ever_online = true;
+            all_down_since = -1;
+            if (app.offline != ONLINE) app.offline = ONLINE, dirty = true;
+        } else if (all_down_since < 0) {
+            all_down_since = now_ms;
+        } else if (now_ms - all_down_since >= OFFLINE_AFTER_MS && now_ms - last_wifi_check >= 2000) {
+            last_wifi_check = now_ms;
+            int state = plat_wifi_up() ? OFFLINE_BRIDGES : OFFLINE_WIFI;
+            if (state != (int)app.offline) {
+                if (app.offline == ONLINE && ever_online) { /* one nudge when we lose the link, not on every flap */
+                    buzz(&app, 1, now_ms);
+                    last_input = now_ms;
+                    screen_wake(&app);
+                }
+                app.offline = state;
+                dirty = true;
+            }
         }
         if (app.pet_ready && now_ms - last_tick >= 1000) {
             rate_roll(&app);

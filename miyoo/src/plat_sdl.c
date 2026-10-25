@@ -143,3 +143,5 @@ void plat_audio_close(void) {
     audio_dev = 0;
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
+
+bool plat_wifi_up(void) { return getenv("PAGER_NO_WIFI") == NULL; }

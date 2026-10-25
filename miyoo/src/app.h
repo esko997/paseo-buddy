@@ -97,6 +97,9 @@ typedef struct {
     int64_t alert_flash_until_ms;
     int battery;   /* plat_battery() value */
     bool charging; /* on USB power (and awake_on_power set): screen stays on */
+    /* No bridge reachable for OFFLINE_AFTER_MS: OFFLINE_WIFI if the Miyoo's own Wi-Fi is down,
+     * OFFLINE_BRIDGES if Wi-Fi is up but every bridge fails. ui.c shows a banner. */
+    enum { ONLINE, OFFLINE_BRIDGES, OFFLINE_WIFI } offline;
 
     /* events[i % EVENT_RING] for i in [max(0, n_events - EVENT_RING), n_events) */
     Event events[EVENT_RING];
