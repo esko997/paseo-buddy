@@ -278,8 +278,6 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
             }
             bool finished = t->bucket == B_RUNNING && a->bucket != B_RUNNING;
             raise = (urgent && t->bucket != a->bucket) || finished;
-            /* Back to work means you already handled it (e.g. replied at the desk). */
-            if (a->bucket == B_RUNNING && t->bucket != B_RUNNING) t->alert = false;
             t->out_tokens = a->out_tokens;
         }
         if (raise) {
@@ -294,6 +292,9 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
             if (a->bucket < out.worst) out.worst = a->bucket;
             if (!first_alert) first_alert = a;
         }
+        /* "NEW" mirrors Paseo: once the agent is back to work, or no longer needs attention there
+         * (you opened it in Paseo), it stops counting. The buzz/cue above has already happened. */
+        if (a->bucket == B_RUNNING || a->bucket == B_DONE) t->alert = false;
     }
     int keep = 0;
     for (int i = 0; i < app->n_track; i++)
