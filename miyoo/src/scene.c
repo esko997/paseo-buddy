@@ -3,6 +3,7 @@
  * level drawing; animation state lives in a fixed particle pool, positions are analytic in age so
  * drawing never mutates the scene. */
 #include "scene.h"
+#include "pet_view.h"
 
 #include <stdio.h>
 #include <stdlib.h>

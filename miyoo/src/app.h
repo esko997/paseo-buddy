@@ -20,6 +20,7 @@ typedef enum {
     EV_HATCHED,   /* the egg hatched */
     EV_EVOLVED,   /* the pet reached a new stage */
     EV_PAT,       /* the user patted the pet */
+    EV_UNLOCKED,  /* the pet earned a cosmetic; amount = unlock id (pet.h) */
 } EventKind;
 
 typedef struct {
@@ -79,6 +80,17 @@ typedef struct {
     bool pet_ready;
     Pet pet;
     int64_t last_save;
+    Pet saved_pet; /* copy at the last save; pet_save_needed(&pet, &saved_pet) decides writes */
+
+    /* Wardrobe on the Pet screen (pet_view.c owns the behaviour). */
+    bool wardrobe_open;
+    int wardrobe_slot, wardrobe_sel;
+
+    /* Today across all bridges (bridge-local day), for the den's ATM. Computed by main.c from
+     * each Feed's `today` line; only bridges reporting the newest day count. */
+    int64_t day_tokens;
+    int64_t day_cost_mc; /* millicents (1/1000 of a cent) */
+    bool night_dim;      /* screen dimmed for the night (main.c); scenes may calm down */
 
     char bubble[64];
     int64_t bubble_until_ms;
@@ -99,5 +111,3 @@ typedef struct Scene Scene;
 
 int64_t app_now(const App *app);
 void ui_draw(const App *app, const Scene *scene, Canvas *c, int64_t now_ms);
-/* Draws the pet (with mood decorations) in a (16*s)-square box at x,y. Used by the scene. */
-void ui_draw_pet(Canvas *c, const App *app, int x, int y, int s, int64_t now_ms);

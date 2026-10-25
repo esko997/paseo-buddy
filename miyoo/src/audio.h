@@ -11,6 +11,7 @@ typedef enum {
     SFX_PAT,       /* the user patted the pet */
     SFX_HATCH,     /* the egg hatched */
     SFX_EVOLVE,    /* the pet evolved */
+    SFX_UNLOCK,    /* the pet earned a cosmetic (small sparkly jingle) */
     SFX_COUNT
 } Sfx;
 

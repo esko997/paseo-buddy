@@ -22,3 +22,5 @@ int gfx_text(Canvas *c, FontId f, int x, int y, uint32_t color, const char *s, i
 int gfx_text_fit(Canvas *c, FontId f, int x, int y, uint32_t color, const char *s, int max_w);
 /* Word-wraps into a box; returns number of lines used (<= max_lines). */
 int gfx_text_wrap(Canvas *c, FontId f, int x, int y, int max_w, int max_lines, uint32_t color, const char *s);
+/* Progress bar: bg track, fg fill for frac in [0,1] (clamped). */
+void gfx_bar(Canvas *c, int x, int y, int w, int h, double frac, uint32_t bg, uint32_t fg);

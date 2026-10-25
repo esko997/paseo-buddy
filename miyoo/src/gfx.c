@@ -78,3 +78,10 @@ int gfx_text_wrap(Canvas *c, FontId f, int x, int y, int max_w, int max_lines, u
     }
     return lines;
 }
+
+void gfx_bar(Canvas *c, int x, int y, int w, int h, double frac, uint32_t bg, uint32_t fg) {
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    gfx_rect(c, x, y, w, h, bg);
+    gfx_rect(c, x, y, (int)(w * frac), h, fg);
+}

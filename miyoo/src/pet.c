@@ -107,6 +107,34 @@ FeedResult pet_feed(Pet *p, const Feed *f, int64_t now, int32_t tz_offset) {
 
 void pet_pat(Pet *p, int64_t now) { p->cheer_until = now + CHEER_S; }
 
+bool pet_save_needed(const Pet *now, const Pet *saved) {
+    if (now->xp != saved->xp || now->stage != saved->stage || now->adult_family != saved->adult_family ||
+        now->lifetime_turns != saved->lifetime_turns || now->day != saved->day ||
+        now->today_tokens != saved->today_tokens || now->today_turns != saved->today_turns ||
+        now->best_day_tokens != saved->best_day_tokens || now->cheer_until != saved->cheer_until ||
+        now->unlocked != saved->unlocked || strcmp(now->name, saved->name) != 0 ||
+        memcmp(now->diet, saved->diet, sizeof now->diet) != 0 ||
+        memcmp(now->equipped, saved->equipped, sizeof now->equipped) != 0)
+        return true;
+    for (int i = 0; i < PET_LEDGERS; i++) {
+        const LedgerSeen *a = &now->seen[i], *b = &saved->seen[i];
+        if (strcmp(a->ledger_id, b->ledger_id) || memcmp(a->fed, b->fed, sizeof a->fed) || a->turns != b->turns ||
+            a->errors != b->errors)
+            return true;
+    }
+    return false;
+}
+
+const char *pet_unlock_name(int id) {
+    (void)id;
+    return "?";
+}
+
+uint64_t pet_check_unlocks(Pet *p, int64_t now, int32_t tz_offset) {
+    (void)p, (void)now, (void)tz_offset;
+    return 0;
+}
+
 Mood pet_mood(const Pet *p, int64_t now, int32_t tz_offset, int waiting, int running) {
     if (p->stage == STAGE_EGG) return waiting ? MOOD_ALERT : MOOD_IDLE;
     if (waiting) return MOOD_ALERT;

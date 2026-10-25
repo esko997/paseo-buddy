@@ -9,6 +9,7 @@
 
 #include "app.h"
 #include "audio.h"
+#include "pet_view.h"
 #include "platform.h"
 #include "scene.h"
 
@@ -319,6 +320,7 @@ static bool handle(App *app, Button b, int64_t now_ms) {
         ack_all(app);
         return true;
     }
+    if (app->screen == SCREEN_PET && pet_screen_handle(app, b, now_ms)) return true;
     if (app->screen == SCREEN_DETAIL) {
         if (b == PAD_B || b == PAD_A) app->screen = SCREEN_AGENTS;
         else if (b == PAD_UP) open_detail(app, app->sel - 1);

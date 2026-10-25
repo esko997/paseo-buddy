@@ -35,6 +35,10 @@ typedef struct {
     int64_t cheer_until;  /* unix seconds: happy after a finish or a pat */
     int64_t eating_until; /* unix seconds; not persisted */
     LedgerSeen seen[PET_LEDGERS];
+    /* Cosmetics (designed in pet.c): bit i of `unlocked` = unlock id i, kept forever. `equipped[slot]`
+     * is an unlock id or -1. Slot/id catalog lives in pet.c behind the functions below. */
+    uint64_t unlocked;
+    int8_t equipped[8];
 } Pet;
 
 typedef struct {
@@ -43,6 +47,7 @@ typedef struct {
     int64_t errors;
     bool hatched;
     bool evolved;
+    uint64_t unlocked; /* ids newly earned by this feed (bitmask) */
 } FeedResult;
 
 void pet_init(Pet *p, const char *name, int64_t now);
@@ -62,3 +67,9 @@ int64_t stage_threshold(Stage s);
 Family pet_favorite(const Pet *p);
 /* Today's counters, reset if the bridge-local day changed. */
 void pet_roll_day(Pet *p, int64_t now, int32_t tz_offset);
+/* True if anything persisted differs (ignores bookkeeping like LedgerSeen.last_seen and eating_until). */
+bool pet_save_needed(const Pet *now, const Pet *saved);
+/* Display name of an unlock id, e.g. "Party hat". */
+const char *pet_unlock_name(int id);
+/* Grants time/date-based unlocks (e.g. seasonal, days alive). Returns newly earned ids. */
+uint64_t pet_check_unlocks(Pet *p, int64_t now, int32_t tz_offset);
