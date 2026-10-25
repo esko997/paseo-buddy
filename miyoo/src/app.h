@@ -1,0 +1,103 @@
+#pragma once
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "feed.h"
+#include "gfx.h"
+#include "net.h"
+#include "pet.h"
+
+/* L/R cycle AGENTS -> DEN -> PET; DETAIL is entered from AGENTS. */
+typedef enum { SCREEN_AGENTS, SCREEN_DEN, SCREEN_PET, SCREEN_DETAIL } Screen;
+
+/* Things that happened, produced by main.c's apply_feed/pat handling; consumed by the scene
+ * (animations) and the sound cues. */
+typedef enum {
+    EV_TOKENS,    /* an agent produced `amount` new output tokens */
+    EV_FINISHED,  /* an agent's running turn ended */
+    EV_NEEDS_YOU, /* an agent started waiting on a permission prompt */
+    EV_FAILED,    /* an agent errored */
+    EV_HATCHED,   /* the egg hatched */
+    EV_EVOLVED,   /* the pet reached a new stage */
+    EV_PAT,       /* the user patted the pet */
+} EventKind;
+
+typedef struct {
+    EventKind kind;
+    int bridge;       /* -1 for pet events */
+    char agent_id[8]; /* empty for pet events */
+    Family family;
+    int64_t amount;
+    int64_t at_ms; /* monotonic ms */
+} Event;
+
+#define EVENT_RING 64
+#define RATE_MINUTES 30
+
+typedef struct {
+    int bridge;
+    Agent agent;
+    bool alert; /* unacknowledged: finished, failed, or waiting on you */
+} Row;
+
+typedef struct {
+    int bridge;
+    char id[8];
+    Bucket bucket;
+    int64_t out_tokens; /* last seen, for per-agent EV_TOKENS deltas */
+    bool alert;
+    bool present;
+} Track;
+
+#define MAX_ROWS (MAX_BRIDGES * MAX_AGENTS)
+
+typedef struct {
+    Config cfg;
+    char pet_path[512];
+
+    Feed feeds[MAX_BRIDGES];
+    bool have_feed[MAX_BRIDGES];
+    LinkState link[MAX_BRIDGES];
+    char link_err[MAX_BRIDGES][64];
+    uint64_t gen[MAX_BRIDGES];
+
+    int64_t clock_offset; /* bridge time - device time */
+    bool clock_synced;
+    int32_t tz_offset;
+
+    Track track[MAX_ROWS];
+    int n_track;
+    Row rows[MAX_ROWS];
+    int n_rows;
+    int n_alerts, n_running;
+
+    Screen screen;
+    int sel, scroll;
+    char detail_key[8]; /* agent id shown on the detail screen */
+    int detail_bridge;
+
+    bool pet_ready;
+    Pet pet;
+    int64_t last_save;
+
+    char bubble[64];
+    int64_t bubble_until_ms;
+    int64_t alert_flash_until_ms;
+    int battery;   /* plat_battery() value */
+    bool charging; /* on USB power (and awake_on_power set): screen stays on */
+
+    /* events[i % EVENT_RING] for i in [max(0, n_events - EVENT_RING), n_events) */
+    Event events[EVENT_RING];
+    uint64_t n_events;
+    /* Output tokens eaten per bridge-clock minute; rate[RATE_MINUTES - 1] is the current minute
+     * (index rate_minute = unix_minutes). Older minutes shift left as time passes. */
+    int64_t rate[RATE_MINUTES];
+    int64_t rate_minute;
+} App;
+
+typedef struct Scene Scene;
+
+int64_t app_now(const App *app);
+void ui_draw(const App *app, const Scene *scene, Canvas *c, int64_t now_ms);
+/* Draws the pet (with mood decorations) in a (16*s)-square box at x,y. Used by the scene. */
+void ui_draw_pet(Canvas *c, const App *app, int x, int y, int s, int64_t now_ms);

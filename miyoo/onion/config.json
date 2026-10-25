@@ -1,0 +1,6 @@
+{
+  "label": "Paseo Pager",
+  "icon": "icon.png",
+  "launch": "launch.sh",
+  "description": "Watch your Paseo agents and raise a token-eating pet"
+}

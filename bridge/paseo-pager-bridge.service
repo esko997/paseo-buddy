@@ -1,0 +1,14 @@
+[Unit]
+Description=Paseo Pager read-only bridge (LAN feed for the Miyoo pager)
+After=network-online.target
+
+[Service]
+# install.sh rewrites NODE and the script path for this machine.
+ExecStart=NODE BRIDGE_DIR/pager-bridge.mjs
+WorkingDirectory=BRIDGE_DIR
+Environment=PAGER_LISTEN=0.0.0.0:6780
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

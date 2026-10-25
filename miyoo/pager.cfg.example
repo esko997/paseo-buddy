@@ -1,0 +1,18 @@
+# Copy to pager.cfg next to the pager binary.
+# One line per computer running bridge/pager-bridge.mjs (max 4):
+#   bridge = <ip>:<port> <token from ~/.config/paseo-pager/token on that computer>
+# IP addresses only (no hostnames).
+bridge = 192.168.1.233:6780 PASTE_TOKEN_HERE
+# bridge = 192.168.1.187:6780 PASTE_BAZZITE_TOKEN_HERE
+
+pet_name = Tok
+# Buzz on new alerts (1/0)
+rumble = 1
+# Chiptune cues, 0 (off) to 10. Cues are short and rate-limited.
+volume = 4
+# No sound 23:00-07:00 (bridge's local time) (1/0)
+quiet_nights = 1
+# Turn the screen off after this many idle seconds (0 = never). Any button or a new alert wakes it.
+screen_timeout = 120
+# Keep the screen on while plugged in (1/0)
+awake_on_power = 1
