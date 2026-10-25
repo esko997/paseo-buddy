@@ -163,14 +163,32 @@ The Pet screen shows:
 
 These are stats, not goals.
 
-**Wardrobe.** The pet earns 22 cosmetics from milestones, and keeps them forever:
-- hats, glasses, scarves and held items;
-- den decor (a shelf ornament) and rug patterns;
-- a shiny coat.
+**Wardrobe and collection book.** There are **60 permanent cosmetics** in this first collection:
+the original 22 milestone items, 32 new finds, and six set-completion gifts. Old saves keep their
+earned items and outfits. Collection storage now supports 256 items for later additions.
 
-Milestones include tokens eaten, turns, days alive, its first adult form, being fed by all four model
-families, a late-night snack, and seasonal dates (Halloween week, December, New Year, its birthday).
-New items are put on automatically if that slot is empty. Locked ones show a silhouette and a hint.
+- **Wearables:** hats, glasses, scarves, pendants, headphones, and held toys.
+- **Den decor:** shelf ornaments and rug patterns, plus the original shiny coat.
+- **Six sets:** Cozy, Garden, Space, Arcade, Seaside, and Explorer. Finish a set to receive its
+  teapot, sunflower, planet mobile, arcade cabinet, lighthouse, or treasure chest.
+
+On the Pet screen, **Y** opens the wardrobe. Left/Right change categories; Up/Down browse;
+**L2/R2** jump a page; **A** equips or removes an item. Press **Y again** for the collection book,
+with set progress, reward previews, and progress toward your next find. **B** goes back.
+Locked items show silhouettes and earning hints. New items go on automatically only if their
+slot is empty; recoloring remains opt-in.
+
+**Finds come from normal agent activity.** The first fresh turn or output tokens after the app
+has established a bridge baseline bring one welcome find. Then each completed turn earns one
+point, and each 1,000 output tokens earns one point (partial thousands carry over).
+Every 1,000 points earns another find, at most one per bridge-local day. Extra points carry over;
+a banked find can arrive on a later day without new activity. There are no streaks or penalties.
+The draw is pet-specific and saved: only unowned finds are eligible, and reopening cannot reroll.
+Set rewards arrive immediately and do not consume that day's find.
+
+Existing token, turn, age, growth, diet, late-night and seasonal milestones still work.
+Historical totals on a newly connected bridge, and the first catch-up from an older save, do not
+generate find points. Clock corrections backwards cannot bypass the daily limit.
 
 The pet's state is saved to `pet.txt` next to the binary, only when something changed (at most every
 5 minutes, right away for hatching, evolving or a new unlock, and on exit). Its clock is the bridge's,
@@ -181,6 +199,7 @@ because the Miyoo's own clock can't be trusted.
 ```sh
 make -C miyoo desktop && PAGER_DIR=/path/with/pager.cfg miyoo/build/pager-desktop   # SDL2 window
 make -C miyoo host && PAGER_DIR=… miyoo/build/pager-host --shot out.ppm --screen agents|den|pet|detail [--sim-ms 3000]
+make -C miyoo test   # save migration, duplicate-free finds, daily gating, set rewards
 ```
 
 Desktop keys use the Miyoo's own keyboard codes, plus Z=A and X=B. Arrows are the D-pad, Enter is START,

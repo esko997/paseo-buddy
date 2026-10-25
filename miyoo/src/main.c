@@ -211,11 +211,11 @@ static void save_pet(App *app) {
 }
 
 /* One bubble and one cue per batch; `quiet` skips the cue (launch, or a louder pet moment). */
-static void announce_unlocks(App *app, uint64_t ids, bool speak, bool quiet, int64_t now_ms) {
-    if (!ids) return;
+static void announce_unlocks(App *app, ItemSet ids, bool speak, bool quiet, int64_t now_ms) {
+    if (itemset_empty(ids)) return;
     int first = -1, n = 0;
-    for (int id = 0; id < 64; id++) {
-        if (!(ids >> id & 1)) continue;
+    for (int id = 0; id < N_UNLOCKS; id++) {
+        if (!itemset_has(ids, id)) continue;
         emit(app, EV_UNLOCKED, -1, NULL, pet_favorite(&app->pet), id, now_ms);
         if (first < 0) first = id;
         n++;
@@ -589,7 +589,7 @@ int main(int argc, char **argv) {
             pet_roll_day(&app.pet, app_now(&app), app.tz_offset);
             last_tick = now_ms;
             if (last_unlock < 0 || now_ms - last_unlock >= UNLOCK_CHECK_MS) {
-                uint64_t ids = pet_check_unlocks(&app.pet, app_now(&app), app.tz_offset);
+                ItemSet ids = pet_check_unlocks(&app.pet, app_now(&app), app.tz_offset);
                 announce_unlocks(&app, ids, true, last_unlock < 0, now_ms);
                 last_unlock = now_ms;
             }

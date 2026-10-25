@@ -7,7 +7,7 @@ ARM_FLAGS := -march=armv7-a -mtune=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard
 # Device glibc (Onion's toolchain sysroot, see Containerfile); the binary must not need newer symbols.
 DEVICE_GLIBC := GLIBC_2.28
 
-.PHONY: all desktop host miyoo dist clean
+.PHONY: all desktop host miyoo dist clean test
 
 all: desktop host
 
@@ -22,6 +22,13 @@ host: build/pager-host
 build/pager-host: $(CORE) src/plat_miyoo.c $(HDRS)
 	@mkdir -p build
 	$(CC) -O2 -g $(WARN) -o $@ $(CORE) src/plat_miyoo.c $(LIBS)
+
+# Collection migration, duplicate-free finds and persistence boundaries.
+test: build/collection-test
+	./build/collection-test
+build/collection-test: tests/collection.c src/pet.c src/pet.h src/feed.h
+	@mkdir -p build
+	$(CC) -O2 -g $(WARN) -Isrc -o $@ tests/collection.c src/pet.c
 
 # armhf binary for the Miyoo Mini Plus (run via ./build-miyoo.sh if you lack the cross compiler).
 # Dynamically linked on purpose: Onion's LD_PRELOAD=libpadsp.so (sound) only hooks dynamic binaries.
