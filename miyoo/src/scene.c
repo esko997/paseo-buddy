@@ -6,9 +6,12 @@
  * drawing never mutates the scene.
  * The den is on screen for hours on a desk, so something small always moves: ambient events every
  * few minutes (a bird or cat at the window, the pet tidying, a robot stretching) and a sunlight
- * patch that drifts with the time of day. With app->night_dim everything gets calmer and sparser. */
+ * patch that drifts with the time of day. With app->night_dim everything gets calmer and sparser.
+ * Equipped wallpaper, window view and per-family robot costumes come from appearance.c; with none
+ * equipped the den is drawn exactly as before. */
 #include "scene.h"
 #include "pet_view.h"
+#include "appearance.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +27,6 @@
 
 #define WHITE 0xf4f4f8
 #define GOLD 0xffd166
-#define VISOR 0x14161f
 
 /* ---- layout ------------------------------------------------------------------------------ */
 
@@ -219,6 +221,9 @@ static const Palette *pet_pal(const Pet *p) {
     int64_t fed = p->diet[0] + p->diet[1] + p->diet[2] + p->diet[3];
     return &PALETTES[fed ? (int)pet_favorite(p) : PAL_UNFED];
 }
+
+/* Unlock id worn in a slot, -1 when nothing is (or the pet isn't loaded yet). */
+static int worn(const App *app, int slot) { return app->pet_ready ? pet_worn(&app->pet, slot) : -1; }
 
 /* ---- geometry ---------------------------------------------------------------------------- */
 
@@ -684,19 +689,10 @@ static Light light_for(const App *app, int64_t now_ms) {
 #define WIN_W 208
 #define WIN_H 100
 
-static void draw_window(Canvas *c, const Light *L, int64_t now) {
+/* The default view: sky by time of day, stars, sun or moon, clouds and the ambient critter. */
+static void draw_sky(Canvas *c, const Light *L, int64_t now) {
     const Clip k = {WIN_X + 6, WIN_Y + 6, WIN_X + WIN_W - 6, WIN_Y + WIN_H - 6};
     int iw = k.x1 - k.x0, ih = k.y1 - k.y0;
-    /* curtains */
-    for (int side = 0; side < 2; side++) {
-        int cx = side ? WIN_X + WIN_W - 2 : WIN_X - 12;
-        R(c, cx, WIN_Y - 4, 14, WIN_H + 8, lerp_col(0x4a1f2c, 0x8a3b4f, L->day));
-        R(c, cx + 4, WIN_Y - 4, 2, WIN_H + 8, lerp_col(0x3a1822, 0x6a2b3c, L->day));
-        R(c, cx + 9, WIN_Y - 4, 2, WIN_H + 8, lerp_col(0x3a1822, 0x6a2b3c, L->day));
-    }
-    R(c, WIN_X - 16, WIN_Y - 7, WIN_W + 32, 4, 0x3a2a20); /* rod */
-    R(c, WIN_X, WIN_Y, WIN_W, WIN_H, 0x5a4232);
-    R(c, WIN_X + 2, WIN_Y + 2, WIN_W - 4, 2, 0x7a5a44);
     /* sky gradient */
     const int bands = 10;
     for (int i = 0; i < bands; i++) {
@@ -804,6 +800,24 @@ static void draw_window(Canvas *c, const Light *L, int64_t now) {
             }
         }
     }
+}
+
+/* view: an equipped WEAR_WINDOW id replacing the sky inside the frame, or -1. */
+static void draw_window(Canvas *c, const Light *L, int view, int64_t now) {
+    const Clip k = {WIN_X + 6, WIN_Y + 6, WIN_X + WIN_W - 6, WIN_Y + WIN_H - 6};
+    int iw = k.x1 - k.x0, ih = k.y1 - k.y0;
+    /* curtains */
+    for (int side = 0; side < 2; side++) {
+        int cx = side ? WIN_X + WIN_W - 2 : WIN_X - 12;
+        R(c, cx, WIN_Y - 4, 14, WIN_H + 8, lerp_col(0x4a1f2c, 0x8a3b4f, L->day));
+        R(c, cx + 4, WIN_Y - 4, 2, WIN_H + 8, lerp_col(0x3a1822, 0x6a2b3c, L->day));
+        R(c, cx + 9, WIN_Y - 4, 2, WIN_H + 8, lerp_col(0x3a1822, 0x6a2b3c, L->day));
+    }
+    R(c, WIN_X - 16, WIN_Y - 7, WIN_W + 32, 4, 0x3a2a20); /* rod */
+    R(c, WIN_X, WIN_Y, WIN_W, WIN_H, 0x5a4232);
+    R(c, WIN_X + 2, WIN_Y + 2, WIN_W - 4, 2, 0x7a5a44);
+    if (view >= 0) appearance_draw_window(c, view, k.x0, k.y0, iw, ih, L->day, L->calm ? now / 4 : now);
+    else draw_sky(c, L, now);
     /* mullions + sill */
     R(c, WIN_X + WIN_W / 2 - 2, k.y0, 4, ih, 0x5a4232);
     R(c, k.x0, WIN_Y + WIN_H / 2 - 2, iw, 3, 0x5a4232);
@@ -904,9 +918,11 @@ static void draw_wall_panel(Canvas *c, const App *app, const Light *L, int64_t n
 static void draw_room(Canvas *c, const Light *L, const Scene *s, const App *app, int64_t now) {
     R(c, 0, DEN_Y, SCREEN_W, WALL_B - DEN_Y, L->wall);
     for (int x = 20; x < SCREEN_W; x += 40) R(c, x, DEN_Y, 2, WALL_B - DEN_Y - 8, L->wall_hi);
+    int wall = worn(app, WEAR_WALL);
+    if (wall >= 0) appearance_draw_wall(c, wall, 0, DEN_Y, SCREEN_W, WALL_B - 8 - DEN_Y, L->day);
     R(c, 0, WALL_B - 8, SCREEN_W, 8, L->trim);
     R(c, 0, WALL_B - 8, SCREEN_W, 1, L->wall_hi);
-    draw_window(c, L, now);
+    draw_window(c, L, worn(app, WEAR_WINDOW), now);
     draw_hud(c, app, now);
     draw_wall_panel(c, app, L, now);
 
@@ -1025,19 +1041,17 @@ int scene_tiny_width(int sc, const char *str) {
 
 /* ---- fuel panel (subscription limits) ------------------------------------------------------ */
 
-static const char *WORKER[12];
-
-/* Robot head (WORKER rows 1..8) at scale 2, 24x16, its eyes showing how much fuel is left. */
+/* Robot head (APPEARANCE_ROBOT rows 1..8) at scale 2, 24x16, its eyes showing how much fuel is left. */
 static void fuel_head(Canvas *c, const Palette *pal, int x, int y, UsageLevel lvl, int64_t now, uint32_t dim_to,
                       int dim) {
     for (int r = 1; r < 9; r++)
         for (int col = 0; col < 12;) {
-            char ch = WORKER[r][col];
+            char ch = APPEARANCE_ROBOT[r][col];
             int run = col + 1;
-            while (run < 12 && WORKER[r][run] == ch) run++;
+            while (run < 12 && APPEARANCE_ROBOT[r][run] == ch) run++;
             uint32_t color = ch == 'o' ? COL_OUTLINE : ch == 'b' ? pal->body : ch == 'l' ? pal->light
                            : ch == 'd'   ? pal->dark
-                           : ch == 'v'   ? VISOR
+                           : ch == 'v'   ? APPEARANCE_VISOR
                                          : 0;
             if (color) R(c, x + col * 2, y + (r - 1) * 2, (run - col) * 2, 2, lerp_col(color, dim_to, dim));
             col = run;
@@ -1208,18 +1222,15 @@ static void draw_atm(Canvas *c, const Scene *s, const App *app, const Light *L, 
 
 /* ---- workers ----------------------------------------------------------------------------- */
 
-static const char *WORKER[12] = {
-    "......a.....", ".....oo.....", "..oooooooo..", ".olllbbbbbo.", ".olvvvvvvdo.", ".obvvvvvvdo.",
-    ".obvvvvvvdo.", ".obbbbbbbdo.", "..oooooooo..", "...obbbbo...", "..obbbbbbo..", "..obbbbbbo..",
-};
-
 typedef enum { EYE_OPEN, EYE_WIDE, EYE_CLOSED, EYE_HAPPY, EYE_X, EYE_TIRED } Eyes;
 typedef enum { ARM_TYPE, ARM_REST, ARM_UP, ARM_WAVE, ARM_STRETCH } Arms;
 
-/* For ARM_STRETCH, `tick` is how far the arms are raised (px) instead of an animation clock. */
-static void draw_worker(Canvas *c, const Palette *pal, int x, int y, Eyes eyes, int look, Arms arms, int tick) {
+/* For ARM_STRETCH, `tick` is how far the arms are raised (px) instead of an animation clock.
+ * costume: the family's equipped WEAR_BOT_* id or -1, drawn over the body under the eyes and arms. */
+static void draw_worker(Canvas *c, const Palette *pal, int x, int y, Eyes eyes, int look, Arms arms, int tick,
+                        int costume) {
     for (int r = 0; r < 12; r++) {
-        const char *row = WORKER[r];
+        const char *row = APPEARANCE_ROBOT[r];
         for (int col = 0; col < 12;) {
             char ch = row[col];
             int run = col + 1;
@@ -1232,13 +1243,14 @@ static void draw_worker(Canvas *c, const Palette *pal, int x, int y, Eyes eyes, 
             case 'l': color = pal->light; break;
             case 'd': color = pal->dark; break;
             case 'a': color = pal->accent; break;
-            case 'v': color = VISOR; break;
+            case 'v': color = APPEARANCE_VISOR; break;
             default: draw = false;
             }
             if (draw) R(c, x + col * WS, y + r * WS, (run - col) * WS, WS, color);
             col = run;
         }
     }
+    appearance_draw_robot(c, costume, x, y, WS);
     uint32_t glow = pal->accent;
     int ey = y + 13;
     for (int e = 0; e < 2; e++) {
@@ -1422,7 +1434,8 @@ static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, i
     /* chair back, worker, desk, keyboard, hands, monitor */
     R(c, wx + 1, d - 16, 34, 18, 0x2a2f40);
     R(c, wx + 1, d - 16, 34, 2, 0x3d4459);
-    draw_worker(c, pal, wx, wy + dy, eyes, look, arms, arms == ARM_STRETCH ? raise : tick);
+    draw_worker(c, pal, wx, wy + dy, eyes, look, arms, arms == ARM_STRETCH ? raise : tick,
+                worn(app, pet_robot_slot(a->family)));
     if (fatigue == USAGE_FULL && (a->bucket == B_RUNNING || a->bucket == B_DONE)) {
         /* empty battery over the head (clear of the wall panel above row one), last cell breathing */
         int bx = wx + 11, by = wy + dy - 9;

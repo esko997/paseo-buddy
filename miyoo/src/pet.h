@@ -11,8 +11,25 @@ typedef enum { STAGE_EGG, STAGE_BABY, STAGE_KID, STAGE_TEEN, STAGE_ADULT, N_STAG
 
 typedef enum { MOOD_IDLE, MOOD_HAPPY, MOOD_WORKING, MOOD_ALERT, MOOD_EATING, MOOD_SLEEP } Mood;
 
-/* Cosmetic slots; Pet.equipped[slot]. DESK/ROOM items show in the den, SHINY recolors the pet. */
-typedef enum { WEAR_HAT, WEAR_FACE, WEAR_NECK, WEAR_HELD, WEAR_DESK, WEAR_ROOM, WEAR_SHINY, N_WEAR } WearSlot;
+/* Cosmetic slots; Pet.equipped[slot]. Append only: slots are persisted by position.
+ * HAT..HELD are worn, DESK/ROOM sit in the den, SHINY (shown as "Coat") recolors the pet,
+ * WALL/WINDOW redecorate the den and BOT_* dress the robot workers of one model family. */
+typedef enum {
+    WEAR_HAT,
+    WEAR_FACE,
+    WEAR_NECK,
+    WEAR_HELD,
+    WEAR_DESK,
+    WEAR_ROOM,
+    WEAR_SHINY,
+    WEAR_WALL,
+    WEAR_WINDOW,
+    WEAR_BOT_CLAUDE,
+    WEAR_BOT_GPT,
+    WEAR_BOT_GEMINI,
+    WEAR_BOT_OTHER,
+    N_WEAR
+} WearSlot;
 
 /* A set of unlock ids 0..255: bit (id & 63) of words[id >> 6]. */
 #define ITEMSET_BITS 256
@@ -93,11 +110,74 @@ enum {
     U_ARCADE_CABINET = 57,
     U_LIGHTHOUSE = 58,
     U_TREASURE_CHEST = 59,
+    /* Second collection (60..119): six themes of ten, by offset: 0 hat, 1 held, 2 desk, 3 rug,
+     * 4 wallpaper, 5 window, 6-7 robot costumes, 8 coat, 9 set reward (neck). Offsets 0..8 are finds. */
+    U_DIVER_HAT = 60,
+    U_TRIDENT = 61,
+    U_CORAL = 62,
+    U_WAVE_RUG = 63,
+    U_OCEAN_WALL = 64,
+    U_REEF_VIEW = 65,
+    U_DIVER_BOT = 66,
+    U_SUB_BOT = 67,
+    U_LAGOON_COAT = 68,
+    U_PEARL_NECKLACE = 69,
+    U_ACORN_HAT = 70,
+    U_PINECONE = 71,
+    U_BIRDHOUSE = 72,
+    U_FERN_RUG = 73,
+    U_FOREST_WALL = 74,
+    U_FOREST_VIEW = 75,
+    U_RANGER_BOT = 76,
+    U_OWL_BOT = 77,
+    U_MOSS_COAT = 78,
+    U_ACORN_CHARM = 79,
+    U_COMET_HAT = 80,
+    U_TELESCOPE = 81,
+    U_ORRERY = 82,
+    U_ORBIT_RUG = 83,
+    U_STAR_WALL = 84,
+    U_NEBULA_VIEW = 85,
+    U_ASTRONAUT_BOT = 86,
+    U_SATELLITE_BOT = 87,
+    U_NEBULA_COAT = 88,
+    U_CONSTELLATION = 89,
+    U_HARD_HAT = 90,
+    U_WRENCH = 91,
+    U_TOOLBOX = 92,
+    U_GEAR_RUG = 93,
+    U_BLUEPRINT_WALL = 94,
+    U_CITY_VIEW = 95,
+    U_MECHANIC_BOT = 96,
+    U_CLOCKWORK_BOT = 97,
+    U_COPPER_COAT = 98,
+    U_GEAR_PENDANT = 99,
+    U_CUPCAKE_HAT = 100,
+    U_ICE_CREAM = 101,
+    U_GUMBALL = 102,
+    U_CANDY_RUG = 103,
+    U_CANDY_WALL = 104,
+    U_CANDY_VIEW = 105,
+    U_PATISSIER_BOT = 106,
+    U_SODA_BOT = 107,
+    U_SORBET_COAT = 108,
+    U_CANDY_BOW = 109,
+    U_SNOW_HAT = 110,
+    U_SNOWGLOBE = 111,
+    U_IGLOO = 112,
+    U_SNOW_RUG = 113,
+    U_FROST_WALL = 114,
+    U_AURORA_VIEW = 115,
+    U_PENGUIN_BOT = 116,
+    U_SNOW_BOT = 117,
+    U_FROST_COAT = 118,
+    U_SNOW_SCARF = 119,
     N_UNLOCKS
 };
 
-/* Themed collection sets 0..N_COLLECTION_SETS-1: Cozy, Garden, Space, Arcade, Seaside, Explorer. */
-#define N_COLLECTION_SETS 6
+/* Themed collection sets 0..N_COLLECTION_SETS-1: Cozy, Garden, Space, Arcade, Seaside, Explorer,
+ * Ocean, Woodland, Celestial, Workshop, Candy, Winter. Append only. */
+#define N_COLLECTION_SETS 12
 
 /* Activity points per find: 1 per completed turn, 1 per 1000 fresh output tokens. */
 #define FIND_POINTS 1000
@@ -130,10 +210,10 @@ typedef struct {
     int64_t eating_until; /* unix seconds; not persisted */
     LedgerSeen seen[PET_LEDGERS];
     /* Cosmetics: `unlocked` holds unlock ids (U_*), kept forever; unknown future ids are preserved.
-     * `equipped[WearSlot]` is an unlock id or -1 (index 7 is unused, always -1). Names, hints,
-     * milestones and sets live in pet.c; art in cosmetics.h. */
+     * `equipped[WearSlot]` is an unlock id or -1. Names, hints, milestones and sets live in pet.c;
+     * art in cosmetics.h and appearance.c. */
     ItemSet unlocked;
-    int16_t equipped[8];
+    int16_t equipped[N_WEAR];
     /* Finds: fresh activity banks points (capped at what the unowned finds need); each FIND_POINTS
      * draws one unowned find, at most one per bridge-local day. */
     int64_t find_points;
@@ -177,6 +257,8 @@ const char *pet_unlock_hint(int id);
 /* WearSlot of an unlock id, -1 if the id is unknown. */
 int pet_unlock_slot(int id);
 const char *pet_slot_name(int slot);
+/* WEAR_BOT_* slot dressing the robots of a model family; unknown families use WEAR_BOT_OTHER. */
+int pet_robot_slot(Family family);
 bool pet_has(const Pet *p, int id);
 /* Id worn in a slot, or -1. */
 int pet_worn(const Pet *p, int slot);

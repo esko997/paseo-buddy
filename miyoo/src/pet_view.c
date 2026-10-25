@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "appearance.h"
 #include "cosmetics.h"
 #include "sprites.h"
 #include "theme.h"
@@ -19,9 +20,14 @@ static int pal_index(const Pet *p) {
     return fed ? (int)pet_favorite(p) : PAL_UNFED;
 }
 
-static const Palette *pet_palette(const Pet *p) {
-    return pet_worn(p, WEAR_SHINY) >= 0 ? &SHINY_PALETTES[pal_index(p)] : &PALETTES[pal_index(p)];
+/* A coat's own palette first, then the old shiny recolor of the pet's family, then its family colors. */
+static const Palette *coat_palette(const Pet *p, int coat) {
+    const Palette *pal = appearance_coat_palette(coat);
+    if (pal) return pal;
+    return coat == U_SHINY ? &SHINY_PALETTES[pal_index(p)] : &PALETTES[pal_index(p)];
 }
+
+static const Palette *pet_palette(const Pet *p) { return coat_palette(p, pet_worn(p, WEAR_SHINY)); }
 
 static void blit_layer(Canvas *c, const Sprite spr, int x, int y, int s, const Palette *pal, Mood mood, bool blink,
                        bool chomp) {
@@ -127,7 +133,8 @@ static void draw_pet(Canvas *c, const Pet *p, Mood mood, int x, int y, int s, in
             wear_nudge(p->stage, slot, &dx, &dy);
             blit_item(c, &COSMETICS[id], px, py, s, dx, dy, ghosted ? SILHOUETTE : 0, phase);
         }
-        if (pet_worn(p, WEAR_SHINY) >= 0 && (tick / 4) % 3 != 2) blit_item(c, &SHINE, px, py, s, 0, 0, 0, tick / 4);
+        /* only the old shiny coat sparkles; the newer coats are plain recolors */
+        if (pet_worn(p, WEAR_SHINY) == U_SHINY && (tick / 4) % 3 != 2) blit_item(c, &SHINE, px, py, s, 0, 0, 0, tick / 4);
     }
     int right = x + 16 * s;
     switch (mood) {
@@ -201,11 +208,13 @@ static Cosmetic animated(int id, int64_t now_ms) {
     return k;
 }
 
-/* Any item (or the shiny coat) centered in a w x h box, at most max_s pixels per art pixel. */
+/* Any item centered in a w x h box, at most max_s pixels per art pixel (generic cosmetics only). Walls,
+ * windows and robot costumes draw their own art; coats show the pet's shape in that coat. */
 static void draw_icon(Canvas *c, const Pet *p, int id, int x, int y, int w, int h, bool locked, int max_s,
                       int64_t now_ms) {
     int tick = (int)(now_ms / 125);
-    if (id == U_SHINY) { /* the pet's own shape in its shiny coat */
+    if (appearance_draw_preview(c, id, x, y, w, h, locked, now_ms)) return;
+    if (pet_unlock_slot(id) == WEAR_SHINY) {
         int s = (w < h ? w : h) / 16, px = x + (w - 16 * s) / 2, py = y + (h - 16 * s) / 2;
         if (locked) {
             for (int r = 0; r < 16; r++)
@@ -213,10 +222,10 @@ static void draw_icon(Canvas *c, const Pet *p, int id, int x, int y, int w, int 
                     if (SPR_KID[r][col] != '.') gfx_rect(c, px + col * s, py + r * s, s, s, SILHOUETTE);
             return;
         }
-        const Palette *pal = &SHINY_PALETTES[pal_index(p)];
+        const Palette *pal = coat_palette(p, id);
         blit_layer(c, SPR_KID, px, py, s, pal, MOOD_IDLE, false, false);
         if (p->stage == STAGE_ADULT) blit_layer(c, OVL_WINGS, px, py, s, pal, MOOD_IDLE, false, false);
-        blit_item(c, &SHINE, px, py, s, 0, 0, 0, tick / 4);
+        if (id == U_SHINY) blit_item(c, &SHINE, px, py, s, 0, 0, 0, tick / 4);
         return;
     }
     Cosmetic k = locked ? COSMETICS[id] : animated(id, now_ms);
@@ -392,9 +401,21 @@ static int wardrobe_id(const App *app) {
 static bool book_open;
 static int book_set;
 
-#define TAB_Y (HEADER_H + 6)
+/* Robot costume slot -> the family whose robots wear it, -1 for other slots. */
+static int robot_family(int slot) {
+    for (int f = 0; f < N_FAMILIES; f++)
+        if (pet_robot_slot((Family)f) == slot) return f;
+    return -1;
+}
+
+/* Tabs scroll: TAB_SHOWN of the N_WEAR slots at once between two arrows, with a dot per slot below. */
+#define TAB_Y (HEADER_H + 4)
 #define TAB_H 28
-#define TAB_W 88
+#define TAB_SHOWN 5
+#define TAB_ARROW 22
+#define TAB_X0 (12 + TAB_ARROW)
+#define TAB_W ((SCREEN_W - 2 * 12 - 2 * TAB_ARROW) / TAB_SHOWN)
+#define DOTS_Y (TAB_Y + TAB_H + 3)
 #define LIST_X 236
 #define LIST_Y (HEADER_H + 46)
 #define ROW_H 62
@@ -418,6 +439,17 @@ static void draw_preview(Canvas *c, const App *app, int id, int64_t now_ms) {
             draw_rug(c, id, bx + 22, by + 58, bx + bw - 22, by + 152, 3, 3, sil);
         }
         gfx_text(c, FONT_BODY, bx + 12, by + bh - 30, DIM, slot == WEAR_DESK ? "On the den shelf" : "On the den rug", 0);
+        return;
+    }
+    if (slot == WEAR_WALL || slot == WEAR_WINDOW || robot_family(slot) >= 0) {
+        /* den looks: the wallpaper, window view or robot costume itself, at full size */
+        gfx_rect(c, bx, by + bh - 40, bw, 40, 0x2a2140);
+        appearance_draw_preview(c, id, bx + 8, by + 8, bw - 16, bh - 56, !owned, now_ms);
+        char cap[40];
+        if (slot == WEAR_WALL) snprintf(cap, sizeof cap, "On the den wall");
+        else if (slot == WEAR_WINDOW) snprintf(cap, sizeof cap, "In the den window");
+        else snprintf(cap, sizeof cap, "For %s robots", family_name((Family)robot_family(slot)));
+        gfx_text_fit(c, FONT_BODY, bx + 12, by + bh - 30, DIM, cap, bw - 24);
         return;
     }
     Pet look = *p;
@@ -470,18 +502,48 @@ static void find_status(const App *app, char *buf, size_t len) {
     else snprintf(buf, len, "%d of %d finds left. Up to one find a day.", left, total);
 }
 
+/* TAB_SHOWN tabs around the open slot; the arrows light up when more slots lie that way, and the dot
+ * row marks every slot (open one yellow, ones with something on in purple). */
 static void draw_tabs(Canvas *c, const App *app) {
     const Pet *p = &app->pet;
-    for (int t = 0; t < N_WEAR; t++) {
-        int x = 12 + t * TAB_W;
-        bool on = t == app->wardrobe_slot;
+    int fw = gfx_font_w(FONT_BODY), cur = app->wardrobe_slot;
+    int shown = N_WEAR < TAB_SHOWN ? N_WEAR : TAB_SHOWN, first = cur - shown / 2;
+    if (first > N_WEAR - shown) first = N_WEAR - shown;
+    if (first < 0) first = 0;
+    gfx_text(c, FONT_BODY, 12 + (TAB_ARROW - fw) / 2, TAB_Y + 3, first > 0 ? TEXT : FAINT, "<", 0);
+    gfx_text(c, FONT_BODY, TAB_X0 + TAB_SHOWN * TAB_W + (TAB_ARROW - fw) / 2, TAB_Y + 3,
+             first + shown < N_WEAR ? TEXT : FAINT, ">", 0);
+    for (int t = first; t < first + shown; t++) {
+        int x = TAB_X0 + (t - first) * TAB_W;
+        bool on = t == cur;
         gfx_rect(c, x + 2, TAB_Y, TAB_W - 4, TAB_H, on ? PANEL_HI : PANEL);
         if (on) gfx_rect(c, x + 2, TAB_Y + TAB_H - 3, TAB_W - 4, 3, SAY_COL);
+        if (pet_worn(p, t) >= 0) gfx_rect(c, x + 2, TAB_Y, TAB_W - 4, 2, GROW_COL); /* something on */
         const char *name = pet_slot_name(t);
-        int tw = (int)strlen(name) * gfx_font_w(FONT_BODY);
-        gfx_text(c, FONT_BODY, x + (TAB_W - tw) / 2, TAB_Y + 3, on ? TEXT : DIM, name, 0);
-        if (pet_worn(p, t) >= 0) gfx_rect(c, x + 8, TAB_Y + 11, 5, 5, GROW_COL); /* something on */
+        int tw = (int)strlen(name) * fw, room = TAB_W - 8;
+        if (tw > room) tw = room;
+        gfx_text_fit(c, FONT_BODY, x + (TAB_W - tw) / 2, TAB_Y + 4, on ? TEXT : DIM, name, room);
     }
+    int pitch = 10, dx = (SCREEN_W - (N_WEAR * pitch - 4)) / 2;
+    for (int t = 0; t < N_WEAR; t++)
+        gfx_rect(c, dx + t * pitch, DOTS_Y, 6, 4, t == cur ? SAY_COL : pet_worn(p, t) >= 0 ? GROW_COL : FAINT);
+}
+
+/* Worn tag and A-button hints per kind of slot: den things aren't "worn", robots dress up. */
+static const char *worn_tag(int slot) {
+    if (slot == WEAR_DESK) return "IN THE DEN";
+    if (slot == WEAR_ROOM) return "ROLLED OUT";
+    if (slot == WEAR_WALL) return "ON THE WALL";
+    if (slot == WEAR_WINDOW) return "IN VIEW";
+    if (robot_family(slot) >= 0) return "DRESSED UP";
+    return "WEARING";
+}
+
+static const char *a_hint(int slot, bool worn) {
+    if (slot == WEAR_WALL) return worn ? "A: take down" : "A: put up";
+    if (slot == WEAR_WINDOW) return worn ? "A: back to sky" : "A: show view";
+    if (robot_family(slot) >= 0) return worn ? "A: undress bots" : "A: dress bots";
+    return worn ? "A: take off" : "A: put on";
 }
 
 static void draw_wardrobe(Canvas *c, const App *app, int64_t now_ms) {
@@ -502,14 +564,14 @@ static void draw_wardrobe(Canvas *c, const App *app, int64_t now_ms) {
         draw_icon(c, p, id, LIST_X + 6, y + 4, ICON - 4, ICON - 4, !owned, 5, now_ms);
         int tx = LIST_X + ICON + 16, tr = LIST_X + rw - 10, name_r = tr;
         if (worn) {
-            const char *tag = slot == WEAR_DESK ? "IN THE DEN" : slot == WEAR_ROOM ? "ROLLED OUT" : "WEARING";
+            const char *tag = worn_tag(slot);
             int tw = (int)strlen(tag) * fw, rx = tr - tw;
             gfx_rect(c, rx - 6, y + 6, tw + 12, 20, GROW_COL);
             gfx_text(c, FONT_BODY, rx, y + 6, BG, tag, 0);
             name_r = rx - 6 - fw; /* the name stops a character short of the tag */
         }
         gfx_text_fit(c, FONT_BODY, tx, y + 6, owned ? TEXT : DIM, owned ? pet_unlock_name(id) : "???", name_r - tx);
-        const char *sub = owned && on ? (worn ? "A: take off" : "A: put on") : pet_unlock_hint(id);
+        const char *sub = owned && on ? a_hint(slot, worn) : pet_unlock_hint(id);
         gfx_text_fit(c, FONT_BODY, tx, y + 30, owned ? (on ? DIM : FAINT) : DIM, sub, tr - tx);
     }
 
@@ -540,15 +602,18 @@ static void draw_wardrobe(Canvas *c, const App *app, int64_t now_ms) {
 
 /* ---- Pet screen: collection book ------------------------------------------------------------- */
 
+/* BOOK_PAGE cards per page in BOOK_COLS columns; the page shown is the one holding book_set. */
 #define BOOK_COLS 2
-#define BOOK_ROWS ((N_COLLECTION_SETS + BOOK_COLS - 1) / BOOK_COLS)
+#define BOOK_PAGE 6
+#define BOOK_PAGES ((N_COLLECTION_SETS + BOOK_PAGE - 1) / BOOK_PAGE)
+#define BOOK_ROWS ((BOOK_PAGE + BOOK_COLS - 1) / BOOK_COLS)
 #define CARD_W 302
 #define CARD_H 68
 #define CARD_GAP 6
 #define CARD_Y (HEADER_H + 32)
 #define PIECES_Y (CARD_Y + BOOK_ROWS * (CARD_H + CARD_GAP) + 2)
-#define PIECE 40     /* icon box in the selected set's strip */
-#define PIECES_MAX 7 /* the biggest set; the strip stops there */
+#define PIECE 38     /* icon box in the selected set's strip */
+#define PIECES_MAX 9 /* the biggest set (nine base items); the strip stops there */
 #define FIND_Y (PIECES_Y + PIECE + 8)
 
 /* Base items of a set in catalog order (not its reward); ids must hold N_UNLOCKS. */
@@ -589,10 +654,16 @@ static void draw_book(Canvas *c, const App *app, int64_t now_ms) {
     char line[96];
     gfx_text(c, FONT_BODY, 14, HEADER_H + 6, TEXT, "COLLECTION BOOK", 0);
     snprintf(line, sizeof line, "Sets %d/%d  Found %d/%d", sets_done, N_COLLECTION_SETS, count_found(p), N_UNLOCKS);
-    gfx_text(c, FONT_BODY, SCREEN_W - 14 - (int)strlen(line) * fw, HEADER_H + 6, DIM, line, 0);
+    int right = SCREEN_W - 14 - (int)strlen(line) * fw;
+    gfx_text(c, FONT_BODY, right, HEADER_H + 6, DIM, line, 0);
+    int page = book_set / BOOK_PAGE, title_r = 14 + 16 * fw;
+    snprintf(line, sizeof line, "Page %d/%d", page + 1, BOOK_PAGES);
+    int pw_text = (int)strlen(line) * fw;
+    gfx_text(c, FONT_BODY, title_r + (right - title_r - pw_text) / 2, HEADER_H + 6, BOOK_PAGES > 1 ? TEXT : FAINT, line, 0);
 
-    for (int s = 0; s < N_COLLECTION_SETS; s++) {
-        int x = 14 + s % BOOK_COLS * (CARD_W + 8), y = CARD_Y + s / BOOK_COLS * (CARD_H + CARD_GAP);
+    for (int s = page * BOOK_PAGE; s < N_COLLECTION_SETS && s < (page + 1) * BOOK_PAGE; s++) {
+        int k = s - page * BOOK_PAGE;
+        int x = 14 + k % BOOK_COLS * (CARD_W + 8), y = CARD_Y + k / BOOK_COLS * (CARD_H + CARD_GAP);
         draw_set_card(c, p, s, x, y, s == book_set, now_ms);
     }
 
@@ -608,7 +679,7 @@ static void draw_book(Canvas *c, const App *app, int64_t now_ms) {
     int tx = 14 + PIECES_MAX * (PIECE + 4) + 6, tw = SCREEN_W - 14 - tx;
     snprintf(line, sizeof line, "%s set", pet_set_name(book_set));
     gfx_text_fit(c, FONT_BODY, tx, PIECES_Y, TEXT, line, tw);
-    if (complete) snprintf(line, sizeof line, "Complete! Gift unlocked.");
+    if (complete) snprintf(line, sizeof line, "Done! Gift unlocked.");
     else snprintf(line, sizeof line, "%d more to find", total - have);
     gfx_text_fit(c, FONT_BODY, tx, PIECES_Y + 20, complete ? GROW_COL : DIM, line, tw);
 
@@ -634,7 +705,7 @@ void pet_screen_draw(Canvas *c, const App *app, int64_t now_ms) {
 }
 
 const char *pet_screen_hints(const App *app) {
-    if (app->pet_ready && app->wardrobe_open && book_open) return "D-pad/L2/R2 pick set  Y/B wardrobe  X pat";
+    if (app->pet_ready && app->wardrobe_open && book_open) return "D-pad pick set  L2/R2 page  Y/B wardrobe  X pat";
     if (app->pet_ready && app->wardrobe_open) return "D-pad browse  L2/R2 page  A on/off  Y book  B close  X pat";
     return "X pat  Y wardrobe  L/R switch  START clear  MENU quit";
 }
@@ -653,7 +724,8 @@ static void wardrobe_pick_slot(App *app, int slot) {
         if (ids[i] == worn) app->wardrobe_sel = i;
 }
 
-/* Book cards sit in BOOK_COLS columns: left/right swap columns, up/down move rows, L2/R2 step through. */
+/* Book cards sit in BOOK_COLS columns across all pages: left/right swap columns, up/down move rows
+ * (crossing pages), L2/R2 flip a whole page keeping the card's spot. */
 static bool book_handle(Button b) {
     int n = N_COLLECTION_SETS, to = book_set;
     switch (b) {
@@ -663,8 +735,13 @@ static bool book_handle(Button b) {
     case PAD_RIGHT: to = book_set % BOOK_COLS == BOOK_COLS - 1 ? book_set - (BOOK_COLS - 1) : book_set + 1; break;
     case PAD_UP: to = book_set - BOOK_COLS < 0 ? book_set + (n - 1) / BOOK_COLS * BOOK_COLS : book_set - BOOK_COLS; break;
     case PAD_DOWN: to = book_set + BOOK_COLS >= n ? book_set % BOOK_COLS : book_set + BOOK_COLS; break;
-    case PAD_L2: to = (book_set + n - 1) % n; break;
-    case PAD_R2: to = (book_set + 1) % n; break;
+    case PAD_L2:
+    case PAD_R2: {
+        int page = book_set / BOOK_PAGE + (b == PAD_R2 ? 1 : BOOK_PAGES - 1);
+        to = page % BOOK_PAGES * BOOK_PAGE + book_set % BOOK_PAGE;
+        if (to >= n) to = n - 1; /* a short last page lands on its last card */
+        break;
+    }
     default: return true;
     }
     if (to >= 0 && to < n) book_set = to; /* a short last row can't be landed past */
@@ -720,11 +797,19 @@ bool pet_screen_handle(App *app, Button b, int64_t now_ms) {
         } else {
             bool on = pet_worn(&app->pet, app->wardrobe_slot) != id;
             pet_toggle_equip(&app->pet, id);
-            int slot = app->wardrobe_slot;
-            if (slot == WEAR_DESK) snprintf(msg, sizeof msg, on ? "%s is on the den shelf." : "%s put away.", pet_unlock_name(id));
-            else if (slot == WEAR_ROOM) snprintf(msg, sizeof msg, on ? "%s rolled out!" : "%s rolled up.", pet_unlock_name(id));
-            else if (slot == WEAR_SHINY) snprintf(msg, sizeof msg, "%s", on ? "So shiny!" : "Back to its usual colors.");
-            else snprintf(msg, sizeof msg, on ? "Wearing the %s!" : "Took off the %s.", pet_unlock_name(id));
+            int slot = app->wardrobe_slot, fam = robot_family(slot);
+            const char *name = pet_unlock_name(id);
+            if (slot == WEAR_DESK) snprintf(msg, sizeof msg, on ? "%s is on the den shelf." : "%s put away.", name);
+            else if (slot == WEAR_ROOM) snprintf(msg, sizeof msg, on ? "%s rolled out!" : "%s rolled up.", name);
+            else if (slot == WEAR_WALL) snprintf(msg, sizeof msg, on ? "%s is up on the den wall." : "%s taken down.", name);
+            else if (slot == WEAR_WINDOW && on) snprintf(msg, sizeof msg, "The den window shows %s.", name);
+            else if (slot == WEAR_WINDOW) snprintf(msg, sizeof msg, "The window shows the sky again.");
+            else if (fam >= 0 && on) snprintf(msg, sizeof msg, "%s bots dress as %s!", family_name((Family)fam), name);
+            else if (fam >= 0) snprintf(msg, sizeof msg, "%s bots are back to normal.", family_name((Family)fam));
+            else if (id == U_SHINY) snprintf(msg, sizeof msg, "%s", on ? "So shiny!" : "Back to its usual colors.");
+            else if (slot == WEAR_SHINY && on) snprintf(msg, sizeof msg, "%s on! New colors.", name);
+            else if (slot == WEAR_SHINY) snprintf(msg, sizeof msg, "Back to its usual colors.");
+            else snprintf(msg, sizeof msg, on ? "Wearing the %s!" : "Took off the %s.", name);
         }
         wardrobe_say(app, msg, now_ms);
         return true;

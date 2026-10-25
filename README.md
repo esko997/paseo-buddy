@@ -163,20 +163,26 @@ The Pet screen shows:
 
 These are stats, not goals.
 
-**Wardrobe and collection book.** There are **60 permanent cosmetics** in this first collection:
-the original 22 milestone items, 32 new finds, and six set-completion gifts. Old saves keep their
-earned items and outfits. Collection storage now supports 256 items for later additions.
+**Wardrobe and collection book.** There are **120 permanent cosmetics**:
+the original 22 milestone items, 86 finds, and 12 set-completion gifts. Old saves keep their
+earned items, outfits, find progress, and daily draw limit. Collection storage supports 256 items.
 
 - **Wearables:** hats, glasses, scarves, pendants, headphones, and held toys.
-- **Den decor:** shelf ornaments and rug patterns, plus the original shiny coat.
-- **Six sets:** Cozy, Garden, Space, Arcade, Seaside, and Explorer. Finish a set to receive its
-  teapot, sunflower, planet mobile, arcade cabinet, lighthouse, or treasure chest.
+- **Den decor:** shelf ornaments, rug patterns, six wallpapers, and six animated window views.
+- **Coats:** six new palettes alongside the original shiny coat.
+- **Robot outfits:** 12 costumes, independently equipped for Claude, GPT, Gemini, and Other robots.
+  They preserve the robots' status eyes, warning signs, and tired behavior.
+- **Twelve sets:** Cozy, Garden, Space, Arcade, Seaside, Explorer, Ocean, Woodland, Celestial,
+  Workshop, Candy, and Winter. The first six award shelf ornaments; the new six award necklaces,
+  collars, a bow, or a scarf. Winter finds are available year-round.
 
 On the Pet screen, **Y** opens the wardrobe. Left/Right change categories; Up/Down browse;
-**L2/R2** jump a page; **A** equips or removes an item. Press **Y again** for the collection book,
-with set progress, reward previews, and progress toward your next find. **B** goes back.
-Locked items show silhouettes and earning hints. New items go on automatically only if their
-slot is empty; recoloring remains opt-in.
+**L2/R2** jump a page; **A** equips or removes an item. Categories scroll across the tab strip.
+Press **Y again** for the collection book, with set progress, reward previews, and progress toward
+your next find. **L2/R2** flip between its two pages; the D-pad selects a set. **B** goes back.
+Locked items show silhouettes or obscured swatches and earning hints. New ordinary wearables and
+shelf/rug items go on automatically only if their slot is empty. Coats, wallpapers, window views,
+and robot outfits are always opt-in. Removing a wallpaper or window view restores the original den.
 
 **Finds come from normal agent activity.** The first fresh turn or output tokens after the app
 has established a bridge baseline bring one welcome find. Then each completed turn earns one
@@ -199,7 +205,7 @@ because the Miyoo's own clock can't be trusted.
 ```sh
 make -C miyoo desktop && PAGER_DIR=/path/with/pager.cfg miyoo/build/pager-desktop   # SDL2 window
 make -C miyoo host && PAGER_DIR=… miyoo/build/pager-host --shot out.ppm --screen agents|den|pet|detail [--sim-ms 3000]
-make -C miyoo test   # save migration, duplicate-free finds, daily gating, set rewards
+make -C miyoo test   # save migration, finds, set rewards, independent outfits, appearance clipping
 ```
 
 Desktop keys use the Miyoo's own keyboard codes, plus Z=A and X=B. Arrows are the D-pad, Enter is START,

@@ -27,18 +27,40 @@ static int local_hour(int64_t now, int32_t tz_offset) {
 /* ---- cosmetics catalog: every unlock is a milestone, a date, a find or a set reward, kept forever */
 
 _Static_assert(N_UNLOCKS <= ITEMSET_BITS, "unlock ids must fit an ItemSet");
+_Static_assert(N_UNLOCKS == 120, "every id needs a catalog entry below");
 
 static void itemset_add(ItemSet *s, int id) {
     if (id >= 0 && id < ITEMSET_BITS) s->words[id >> 6] |= (uint64_t)1 << (id & 63);
 }
 
-enum { SET_COZY, SET_GARDEN, SET_SPACE, SET_ARCADE, SET_SEASIDE, SET_EXPLORER };
+enum {
+    SET_COZY,
+    SET_GARDEN,
+    SET_SPACE,
+    SET_ARCADE,
+    SET_SEASIDE,
+    SET_EXPLORER,
+    SET_OCEAN,
+    SET_WOODLAND,
+    SET_CELESTIAL,
+    SET_WORKSHOP,
+    SET_CANDY,
+    SET_WINTER,
+    N_SETS
+};
+_Static_assert(N_SETS == N_COLLECTION_SETS, "every set needs a name and reward below");
 #define COZY "Cozy"
 #define GARDEN "Garden"
 #define SPACE "Space"
 #define ARCADE "Arcade"
 #define SEASIDE "Seaside"
 #define EXPLORER "Explorer"
+#define OCEAN "Ocean"
+#define WOODLAND "Woodland"
+#define CELESTIAL "Celestial"
+#define WORKSHOP "Workshop"
+#define CANDY "Candy"
+#define WINTER "Winter"
 
 typedef struct {
     const char *name, *hint;
@@ -49,7 +71,7 @@ typedef struct {
 
 #define MILESTONE(n, h, sl) {n, h, sl, -1, false}
 #define FIND(n, sl, set, setname) {n, "Found while you work; " setname " set", sl, set, true}
-#define REWARD(n, set, setname) {n, "Complete the " setname " set", WEAR_DESK, set, false}
+#define REWARD(n, sl, set, setname) {n, "Complete the " setname " set", sl, set, false}
 
 static const UnlockInfo UNLOCKS[N_UNLOCKS] = {
     [U_SPROUT] = MILESTONE("Sprout", "Eat 100k tokens", WEAR_HAT),
@@ -108,12 +130,78 @@ static const UnlockInfo UNLOCKS[N_UNLOCKS] = {
     [U_MOON_LAMP] = FIND("Moon lamp", WEAR_DESK, SET_SPACE, SPACE),
     [U_LEAF_RUG] = FIND("Leaf rug", WEAR_ROOM, SET_GARDEN, GARDEN),
 
-    [U_TEA_POT] = REWARD("Teapot", SET_COZY, COZY),
-    [U_SUNFLOWER] = REWARD("Sunflower", SET_GARDEN, GARDEN),
-    [U_PLANET_MOBILE] = REWARD("Planet mobile", SET_SPACE, SPACE),
-    [U_ARCADE_CABINET] = REWARD("Arcade cabinet", SET_ARCADE, ARCADE),
-    [U_LIGHTHOUSE] = REWARD("Lighthouse", SET_SEASIDE, SEASIDE),
-    [U_TREASURE_CHEST] = REWARD("Treasure chest", SET_EXPLORER, EXPLORER),
+    [U_TEA_POT] = REWARD("Teapot", WEAR_DESK, SET_COZY, COZY),
+    [U_SUNFLOWER] = REWARD("Sunflower", WEAR_DESK, SET_GARDEN, GARDEN),
+    [U_PLANET_MOBILE] = REWARD("Planet mobile", WEAR_DESK, SET_SPACE, SPACE),
+    [U_ARCADE_CABINET] = REWARD("Arcade cabinet", WEAR_DESK, SET_ARCADE, ARCADE),
+    [U_LIGHTHOUSE] = REWARD("Lighthouse", WEAR_DESK, SET_SEASIDE, SEASIDE),
+    [U_TREASURE_CHEST] = REWARD("Treasure chest", WEAR_DESK, SET_EXPLORER, EXPLORER),
+
+    [U_DIVER_HAT] = FIND("Diver hood", WEAR_HAT, SET_OCEAN, OCEAN),
+    [U_TRIDENT] = FIND("Trident", WEAR_HELD, SET_OCEAN, OCEAN),
+    [U_CORAL] = FIND("Coral garden", WEAR_DESK, SET_OCEAN, OCEAN),
+    [U_WAVE_RUG] = FIND("Wave rug", WEAR_ROOM, SET_OCEAN, OCEAN),
+    [U_OCEAN_WALL] = FIND("Ocean tiles", WEAR_WALL, SET_OCEAN, OCEAN),
+    [U_REEF_VIEW] = FIND("Coral reef", WEAR_WINDOW, SET_OCEAN, OCEAN),
+    [U_DIVER_BOT] = FIND("Diver bot", WEAR_BOT_CLAUDE, SET_OCEAN, OCEAN),
+    [U_SUB_BOT] = FIND("Submarine bot", WEAR_BOT_GPT, SET_OCEAN, OCEAN),
+    [U_LAGOON_COAT] = FIND("Lagoon coat", WEAR_SHINY, SET_OCEAN, OCEAN),
+    [U_PEARL_NECKLACE] = REWARD("Pearl necklace", WEAR_NECK, SET_OCEAN, OCEAN),
+
+    [U_ACORN_HAT] = FIND("Acorn cap", WEAR_HAT, SET_WOODLAND, WOODLAND),
+    [U_PINECONE] = FIND("Pinecone", WEAR_HELD, SET_WOODLAND, WOODLAND),
+    [U_BIRDHOUSE] = FIND("Birdhouse", WEAR_DESK, SET_WOODLAND, WOODLAND),
+    [U_FERN_RUG] = FIND("Fern rug", WEAR_ROOM, SET_WOODLAND, WOODLAND),
+    [U_FOREST_WALL] = FIND("Fern wallpaper", WEAR_WALL, SET_WOODLAND, WOODLAND),
+    [U_FOREST_VIEW] = FIND("Forest trail", WEAR_WINDOW, SET_WOODLAND, WOODLAND),
+    [U_RANGER_BOT] = FIND("Ranger bot", WEAR_BOT_GEMINI, SET_WOODLAND, WOODLAND),
+    [U_OWL_BOT] = FIND("Owl bot", WEAR_BOT_OTHER, SET_WOODLAND, WOODLAND),
+    [U_MOSS_COAT] = FIND("Moss coat", WEAR_SHINY, SET_WOODLAND, WOODLAND),
+    [U_ACORN_CHARM] = REWARD("Acorn charm", WEAR_NECK, SET_WOODLAND, WOODLAND),
+
+    [U_COMET_HAT] = FIND("Comet crown", WEAR_HAT, SET_CELESTIAL, CELESTIAL),
+    [U_TELESCOPE] = FIND("Telescope", WEAR_HELD, SET_CELESTIAL, CELESTIAL),
+    [U_ORRERY] = FIND("Orrery", WEAR_DESK, SET_CELESTIAL, CELESTIAL),
+    [U_ORBIT_RUG] = FIND("Orbit rug", WEAR_ROOM, SET_CELESTIAL, CELESTIAL),
+    [U_STAR_WALL] = FIND("Star wallpaper", WEAR_WALL, SET_CELESTIAL, CELESTIAL),
+    [U_NEBULA_VIEW] = FIND("Nebula", WEAR_WINDOW, SET_CELESTIAL, CELESTIAL),
+    [U_ASTRONAUT_BOT] = FIND("Astronaut bot", WEAR_BOT_CLAUDE, SET_CELESTIAL, CELESTIAL),
+    [U_SATELLITE_BOT] = FIND("Satellite bot", WEAR_BOT_GEMINI, SET_CELESTIAL, CELESTIAL),
+    [U_NEBULA_COAT] = FIND("Nebula coat", WEAR_SHINY, SET_CELESTIAL, CELESTIAL),
+    [U_CONSTELLATION] = REWARD("Star collar", WEAR_NECK, SET_CELESTIAL, CELESTIAL),
+
+    [U_HARD_HAT] = FIND("Hard hat", WEAR_HAT, SET_WORKSHOP, WORKSHOP),
+    [U_WRENCH] = FIND("Wrench", WEAR_HELD, SET_WORKSHOP, WORKSHOP),
+    [U_TOOLBOX] = FIND("Toolbox", WEAR_DESK, SET_WORKSHOP, WORKSHOP),
+    [U_GEAR_RUG] = FIND("Gear rug", WEAR_ROOM, SET_WORKSHOP, WORKSHOP),
+    [U_BLUEPRINT_WALL] = FIND("Blueprint wall", WEAR_WALL, SET_WORKSHOP, WORKSHOP),
+    [U_CITY_VIEW] = FIND("City skyline", WEAR_WINDOW, SET_WORKSHOP, WORKSHOP),
+    [U_MECHANIC_BOT] = FIND("Mechanic bot", WEAR_BOT_GPT, SET_WORKSHOP, WORKSHOP),
+    [U_CLOCKWORK_BOT] = FIND("Clockwork bot", WEAR_BOT_OTHER, SET_WORKSHOP, WORKSHOP),
+    [U_COPPER_COAT] = FIND("Copper coat", WEAR_SHINY, SET_WORKSHOP, WORKSHOP),
+    [U_GEAR_PENDANT] = REWARD("Gear pendant", WEAR_NECK, SET_WORKSHOP, WORKSHOP),
+
+    [U_CUPCAKE_HAT] = FIND("Cupcake hat", WEAR_HAT, SET_CANDY, CANDY),
+    [U_ICE_CREAM] = FIND("Ice cream", WEAR_HELD, SET_CANDY, CANDY),
+    [U_GUMBALL] = FIND("Gumball jar", WEAR_DESK, SET_CANDY, CANDY),
+    [U_CANDY_RUG] = FIND("Candy rug", WEAR_ROOM, SET_CANDY, CANDY),
+    [U_CANDY_WALL] = FIND("Candy stripes", WEAR_WALL, SET_CANDY, CANDY),
+    [U_CANDY_VIEW] = FIND("Candy hills", WEAR_WINDOW, SET_CANDY, CANDY),
+    [U_PATISSIER_BOT] = FIND("Pastry chef", WEAR_BOT_CLAUDE, SET_CANDY, CANDY),
+    [U_SODA_BOT] = FIND("Soda bot", WEAR_BOT_OTHER, SET_CANDY, CANDY),
+    [U_SORBET_COAT] = FIND("Sorbet coat", WEAR_SHINY, SET_CANDY, CANDY),
+    [U_CANDY_BOW] = REWARD("Candy bow", WEAR_NECK, SET_CANDY, CANDY),
+
+    [U_SNOW_HAT] = FIND("Snow cap", WEAR_HAT, SET_WINTER, WINTER),
+    [U_SNOWGLOBE] = FIND("Snow globe", WEAR_HELD, SET_WINTER, WINTER),
+    [U_IGLOO] = FIND("Igloo", WEAR_DESK, SET_WINTER, WINTER),
+    [U_SNOW_RUG] = FIND("Snowflake rug", WEAR_ROOM, SET_WINTER, WINTER),
+    [U_FROST_WALL] = FIND("Frost wallpaper", WEAR_WALL, SET_WINTER, WINTER),
+    [U_AURORA_VIEW] = FIND("Aurora", WEAR_WINDOW, SET_WINTER, WINTER),
+    [U_PENGUIN_BOT] = FIND("Penguin bot", WEAR_BOT_GPT, SET_WINTER, WINTER),
+    [U_SNOW_BOT] = FIND("Snow bot", WEAR_BOT_GEMINI, SET_WINTER, WINTER),
+    [U_FROST_COAT] = FIND("Frost coat", WEAR_SHINY, SET_WINTER, WINTER),
+    [U_SNOW_SCARF] = REWARD("Snowflake scarf", WEAR_NECK, SET_WINTER, WINTER),
 };
 
 typedef struct {
@@ -128,15 +216,32 @@ static const CollectionSet SETS[N_COLLECTION_SETS] = {
     [SET_ARCADE] = {ARCADE, U_ARCADE_CABINET},
     [SET_SEASIDE] = {SEASIDE, U_LIGHTHOUSE},
     [SET_EXPLORER] = {EXPLORER, U_TREASURE_CHEST},
+    [SET_OCEAN] = {OCEAN, U_PEARL_NECKLACE},
+    [SET_WOODLAND] = {WOODLAND, U_ACORN_CHARM},
+    [SET_CELESTIAL] = {CELESTIAL, U_CONSTELLATION},
+    [SET_WORKSHOP] = {WORKSHOP, U_GEAR_PENDANT},
+    [SET_CANDY] = {CANDY, U_CANDY_BOW},
+    [SET_WINTER] = {WINTER, U_SNOW_SCARF},
 };
 
-static const char *SLOT_NAMES[N_WEAR] = {"Hat", "Face", "Neck", "Held", "Desk", "Room", "Shiny"};
+/* Slot 6 keeps its WEAR_SHINY id but now holds every coat, so it shows as "Coat". */
+static const char *SLOT_NAMES[N_WEAR] = {"Hat",  "Face",   "Neck",       "Held",    "Desk",       "Room",     "Coat",
+                                         "Wall", "Window", "Claude bot", "GPT bot", "Gemini bot", "Other bot"};
 
 const char *pet_unlock_name(int id) { return id >= 0 && id < N_UNLOCKS ? UNLOCKS[id].name : "?"; }
 const char *pet_unlock_hint(int id) { return id >= 0 && id < N_UNLOCKS ? UNLOCKS[id].hint : ""; }
 int pet_unlock_slot(int id) { return id >= 0 && id < N_UNLOCKS ? (int)UNLOCKS[id].slot : -1; }
 const char *pet_slot_name(int slot) { return slot >= 0 && slot < N_WEAR ? SLOT_NAMES[slot] : "?"; }
 bool pet_has(const Pet *p, int id) { return id >= 0 && id < N_UNLOCKS && itemset_has(p->unlocked, id); }
+
+int pet_robot_slot(Family family) {
+    switch (family) {
+    case FAM_CLAUDE: return WEAR_BOT_CLAUDE;
+    case FAM_GPT: return WEAR_BOT_GPT;
+    case FAM_GEMINI: return WEAR_BOT_GEMINI;
+    default: return WEAR_BOT_OTHER;
+    }
+}
 
 const char *pet_set_name(int set) { return set >= 0 && set < N_COLLECTION_SETS ? SETS[set].name : "?"; }
 int pet_unlock_set(int id) { return id >= 0 && id < N_UNLOCKS ? UNLOCKS[id].set : -1; }
@@ -232,9 +337,13 @@ static ItemSet qualifies(const Pet *p, int64_t now, int32_t tz_offset) {
     return m;
 }
 
+/* New items wear themselves into an empty slot only for the pet's own wearables and den decor
+ * (HAT..ROOM). Coats, wallpaper, windows and robot costumes change how the whole screen looks, so
+ * they stay opt-in. */
+static bool auto_wears(int slot) { return slot >= WEAR_HAT && slot < WEAR_SHINY; }
+
 /* Adds ids to the collection plus the reward of every set that is now complete; a new item is worn
- * right away if its slot is empty (never SHINY, which recolors the pet and stays opt-in). Returns
- * the ids that were new. */
+ * right away if auto_wears() its slot and the slot is empty. Returns the ids that were new. */
 static ItemSet award(Pet *p, ItemSet ids) {
     ItemSet fresh;
     for (int w = 0; w < ITEMSET_BITS / 64; w++) {
@@ -244,14 +353,14 @@ static ItemSet award(Pet *p, ItemSet ids) {
     for (int set = 0; set < N_COLLECTION_SETS; set++) {
         int have, total, reward = SETS[set].reward;
         pet_set_progress(p, set, &have, &total);
-        if (have == total && !pet_has(p, reward)) {
+        if (total > 0 && have == total && !pet_has(p, reward)) {
             itemset_add(&fresh, reward);
             itemset_add(&p->unlocked, reward);
         }
     }
     for (int id = 0; id < N_UNLOCKS; id++) {
         int slot = UNLOCKS[id].slot;
-        if (itemset_has(fresh, id) && slot != WEAR_SHINY && pet_worn(p, slot) < 0) p->equipped[slot] = (int16_t)id;
+        if (itemset_has(fresh, id) && auto_wears(slot) && pet_worn(p, slot) < 0) p->equipped[slot] = (int16_t)id;
     }
     return fresh;
 }
@@ -449,6 +558,10 @@ Mood pet_mood(const Pet *p, int64_t now, int32_t tz_offset, int waiting, int run
 
 /* ---- persistence: plain key=value text so it survives format tweaks --------------------- */
 
+/* `equipped=` value count written by builds from before the collection (7 slots + 1 padding). */
+#define LEGACY_EQUIPPED 8
+_Static_assert(LEGACY_EQUIPPED != N_WEAR && WEAR_SHINY + 1 < LEGACY_EQUIPPED, "legacy layout must stay detectable");
+
 bool pet_save(const Pet *p, const char *path) {
     char tmp[512];
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
@@ -522,10 +635,16 @@ bool pet_load(Pet *p, const char *path) {
                 if (end == v) break;
                 p->unlocked.words[w] = bits;
             }
-        } else if (!strcmp(k, "equipped")) { /* older files carry an unused eighth value: ignored */
-            int w, n;
-            for (int i = 0; i < N_WEAR && sscanf(v, "%d%n", &w, &n) == 1; i++, v += n)
-                p->equipped[i] = (int16_t)(w >= 0 && w < ITEMSET_BITS ? w : -1);
+        } else if (!strcmp(k, "equipped")) {
+            /* One value per slot. Files from before the collection wrote eight: slots 0..6 plus an
+             * unused padding value that must not become slot 7 (the wallpaper). The first collection
+             * wrote seven; now N_WEAR. Values past N_WEAR (a newer build) are ignored. */
+            int16_t vals[N_WEAR];
+            int count = 0, w, n;
+            for (; sscanf(v, "%d%n", &w, &n) == 1; v += n, count++)
+                if (count < N_WEAR) vals[count] = (int16_t)(w >= 0 && w < ITEMSET_BITS ? w : -1);
+            int use = count == LEGACY_EQUIPPED ? WEAR_SHINY + 1 : count < N_WEAR ? count : N_WEAR;
+            memcpy(p->equipped, vals, (size_t)use * sizeof *vals);
         } else if (!strcmp(k, "diet") && sscanf(v, "%lld %lld %lld %lld", &a, &b, &c, &d) == 4) {
             p->diet[0] = a, p->diet[1] = b, p->diet[2] = c, p->diet[3] = d;
         } else if (!strcmp(k, "seen") && n_seen < PET_LEDGERS) {
