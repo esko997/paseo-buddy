@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # Installs the bridge as a systemd user service on this machine and prints the pager.cfg line.
+#   install.sh            plain bridge
+#   install.sh --usage    also report subscription limits from `omp usage` (do this on ONE machine)
+#   install.sh --no-usage turn that back off
 set -euo pipefail
 dir=$(cd "$(dirname "$0")" && pwd)
+usage_mode=keep
+case "${1:-}" in
+  --usage) usage_mode=on ;;
+  --no-usage) usage_mode=off ;;
+  "") ;;
+  *) echo "usage: $0 [--usage|--no-usage]" >&2; exit 2 ;;
+esac
 # Non-login shells (ssh one-liners) often lack Homebrew/nvm on PATH, so look in the usual places too.
 node=${NODE:-$(command -v node || true)}
 for cand in /home/linuxbrew/.linuxbrew/bin/node "$HOME"/.nvm/versions/node/*/bin/node; do
@@ -15,6 +25,20 @@ PATH="$(dirname "$node"):$PATH" npm --prefix "$dir" install --omit=dev --silent
 unit_dir="$HOME/.config/systemd/user"
 mkdir -p "$unit_dir"
 sed -e "s|NODE|$node|" -e "s|BRIDGE_DIR|$dir|g" "$dir/paseo-pager-bridge.service" > "$unit_dir/paseo-pager-bridge.service"
+dropin="$unit_dir/paseo-pager-bridge.service.d/usage.conf"
+if [ "$usage_mode" = on ]; then
+  omp=${OMP:-$(command -v omp || true)}
+  for cand in /home/linuxbrew/.linuxbrew/bin/omp "$HOME/.local/bin/omp"; do
+    [ -n "$omp" ] && break
+    [ -x "$cand" ] && omp=$cand
+  done
+  [ -x "$omp" ] || { echo "omp not found; set OMP=/path/to/omp" >&2; exit 1; }
+  mkdir -p "$(dirname "$dropin")"
+  printf '[Service]\nEnvironment=PAGER_USAGE=1\nEnvironment=PAGER_OMP=%s\n' "$omp" > "$dropin"
+  echo "subscription limits: on (via $omp)"
+elif [ "$usage_mode" = off ]; then
+  rm -f "$dropin"
+fi
 systemctl --user daemon-reload
 systemctl --user enable paseo-pager-bridge.service
 systemctl --user restart paseo-pager-bridge.service

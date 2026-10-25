@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Read-only bridge: Paseo daemon (WebSocket SDK) -> tiny long-poll text feed for the Miyoo pager.
 // It never sends prompts, permission answers, or any mutating RPC; it only lists agents.
+// With PAGER_USAGE=1 it also runs `omp usage --json` (read-only) to report subscription limits.
 import { createPaseoClient } from "@getpaseo/client";
+import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync, existsSync } from "node:fs";
@@ -16,6 +18,11 @@ const TOKEN_PATH = join(CONFIG_DIR, "token");
 const MAX_AGENTS = 32;
 const MAX_WAIT_S = 50;
 const REFRESH_MS = 20_000;
+// Subscription limits via omp (it keeps its own provider logins fresh). One bridge is enough.
+const USAGE_ON = process.env.PAGER_USAGE === "1";
+const OMP = process.env.PAGER_OMP ?? "omp";
+const USAGE_EVERY_MS = 5 * 60_000;
+const MAX_USAGE = 16;
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
@@ -170,6 +177,52 @@ let body = "";
 let rev = 0;
 const waiters = new Set();
 
+// ---- Subscription limits (PAGER_USAGE=1) ------------------------------------------------
+// `usage_at\t<unix s>` then one `usage\t<provider>\t<window>\t<label>\t<used per mille>\t<resets unix s>\t<status>`
+// per limit window. On a failed poll the last good snapshot is kept; usage_at tells the device its age.
+let usageLines = [];
+
+function parseOmpUsage(json) {
+  const rows = [];
+  for (const report of json.reports ?? []) {
+    for (const limit of report.limits ?? []) {
+      const frac = limit.amount?.usedFraction;
+      if (typeof frac !== "number") continue;
+      rows.push(
+        [
+          "usage",
+          clean(report.provider, 23).replace(/ /g, "_"),
+          clean(limit.window?.id ?? limit.scope?.windowId ?? "-", 15).replace(/ /g, "_"),
+          clean(limit.label, 39),
+          Math.round(Math.min(1, Math.max(0, frac)) * 1000),
+          limit.window?.resetsAt ? Math.floor(limit.window.resetsAt / 1000) : 0,
+          clean(limit.status ?? "ok", 15),
+        ].join("\t"),
+      );
+    }
+  }
+  // omp lists a shared quota once per model family that draws on it; one row is enough.
+  return [...new Set(rows)].slice(0, MAX_USAGE);
+}
+
+function pollUsage() {
+  execFile(OMP, ["usage", "--json"], { timeout: 60_000, maxBuffer: 4 << 20 }, (err, stdout) => {
+    try {
+      if (err) throw err;
+      const rows = parseOmpUsage(JSON.parse(stdout));
+      usageLines = [`usage_at\t${Math.floor(Date.now() / 1000)}`, ...rows];
+    } catch (e) {
+      log("omp usage failed:", e?.message ?? e);
+    }
+    render();
+  });
+}
+
+if (USAGE_ON) {
+  pollUsage();
+  setInterval(pollUsage, USAGE_EVERY_MS);
+}
+
 function render() {
   rollDay();
   const visible = agents
@@ -187,6 +240,7 @@ function render() {
     `daemon\t${daemonUp ? "up" : "down"}`,
     `feed\t${FAMILIES.map((f) => ledger.out[f]).join("\t")}\t${ledger.turns}\t${ledger.errors}`,
     `today\t${ledger.today.day}\t${ledger.today.out}\t${ledger.today.costMc}`,
+    ...usageLines,
   ];
   for (const { a, bucket } of visible) {
     const u = a.lastUsage ?? {};
