@@ -3,13 +3,24 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "cosmetics.h"
 #include "sprites.h"
 #include "theme.h"
 
-static int pet_palette(const Pet *p) {
+#define SILHOUETTE 0x2e3344 /* locked items: a dark shape to look forward to */
+#define RUG_SWATCH 0x5a3c6e /* rug previews, close to the den rug */
+#define BUBBLE_MS 4000
+
+/* ---- drawing the pet ------------------------------------------------------------------------ */
+
+static int pal_index(const Pet *p) {
     if (p->stage == STAGE_ADULT) return p->adult_family;
     int64_t fed = p->diet[0] + p->diet[1] + p->diet[2] + p->diet[3];
     return fed ? (int)pet_favorite(p) : PAL_UNFED;
+}
+
+static const Palette *pet_palette(const Pet *p) {
+    return pet_worn(p, WEAR_SHINY) >= 0 ? &SHINY_PALETTES[pal_index(p)] : &PALETTES[pal_index(p)];
 }
 
 static void blit_layer(Canvas *c, const Sprite spr, int x, int y, int s, const Palette *pal, Mood mood, bool blink,
@@ -42,11 +53,44 @@ static void blit_layer(Canvas *c, const Sprite spr, int x, int y, int s, const P
     }
 }
 
-void ui_draw_pet(Canvas *c, const App *app, int x, int y, int s, int64_t now_ms) {
-    const Pet *p = &app->pet;
-    int64_t now = app_now(app);
-    Mood mood = pet_mood(p, now, app->tz_offset, app->n_alerts, app->n_running);
-    const Palette *pal = &PALETTES[pet_palette(p)];
+/* A cosmetic layer shifted by (dx,dy) sprite pixels. silhouette != 0 draws every pixel in that color
+ * (twinkles skipped); phase picks which twinkle set ('*' or '+') is lit. */
+static void blit_item(Canvas *c, const Cosmetic *k, int x, int y, int s, int dx, int dy, uint32_t silhouette,
+                      int phase) {
+    for (int r = 0; r < 16; r++) {
+        for (int col = 0; col < 16; col++) {
+            char ch = k->art[r][col];
+            uint32_t color;
+            switch (ch) {
+            case 'o': color = COL_OUTLINE; break;
+            case 'w': color = COL_SHELL; break;
+            case '1': color = k->ink[0]; break;
+            case '2': color = k->ink[1]; break;
+            case '3': color = k->ink[2]; break;
+            case '*':
+            case '+':
+                if (silhouette || (ch == '*') != (phase % 2 == 0)) continue;
+                color = COL_SHELL;
+                break;
+            default: continue;
+            }
+            if (silhouette) color = silhouette;
+            gfx_rect(c, x + (col + dx) * s, y + (r + dy) * s, s, s, color);
+        }
+    }
+}
+
+/* Worn layers are drawn for SPR_KID; the baby is narrower and sits a row lower. */
+static void wear_nudge(Stage st, int slot, int *dx, int *dy) {
+    *dx = *dy = 0;
+    if (st != STAGE_BABY) return;
+    *dy = 1;
+    if (slot == WEAR_HELD) *dx = -1;
+}
+
+/* `ghost` (an unlock id or -1) is drawn as a silhouette in its slot: the wardrobe's locked preview. */
+static void draw_pet(Canvas *c, const Pet *p, Mood mood, int x, int y, int s, int64_t now_ms, int ghost) {
+    const Palette *pal = pet_palette(p);
     int tick = (int)(now_ms / 125); /* 8 Hz animation clock */
     bool blink = (now_ms / 100) % 37 == 0;
     bool chomp = mood == MOOD_EATING && (tick / 2) % 2;
@@ -59,17 +103,31 @@ void ui_draw_pet(Canvas *c, const App *app, int x, int y, int s, int64_t now_ms)
         bob = ((tick / 4) % 2) ? -s / 2 : 0;
     }
     int px = x + wobble, py = y + bob;
+    bool hat = pet_worn(p, WEAR_HAT) >= 0 || pet_unlock_slot(ghost) == WEAR_HAT;
     if (p->stage == STAGE_EGG) {
         blit_layer(c, SPR_EGG, px, py, s, pal, mood, false, false);
     } else if (p->stage == STAGE_BABY) {
         blit_layer(c, SPR_BABY, px, py, s, pal, mood, blink, chomp);
     } else {
         blit_layer(c, SPR_KID, px, py, s, pal, mood, blink, chomp);
-        if (p->stage == STAGE_TEEN) blit_layer(c, OVL_ANTENNA, px, py, s, pal, mood, false, false);
+        /* A hat sits where the antenna/crest would poke out; the crest comes back when it's off. */
+        if (p->stage == STAGE_TEEN && !hat) blit_layer(c, OVL_ANTENNA, px, py, s, pal, mood, false, false);
         if (p->stage == STAGE_ADULT) {
-            blit_layer(c, OVL_CREST[p->adult_family], px, py, s, pal, mood, false, false);
+            if (!hat) blit_layer(c, OVL_CREST[p->adult_family], px, py, s, pal, mood, false, false);
             blit_layer(c, OVL_WINGS, px, py, s, pal, mood, false, false);
         }
+    }
+    if (p->stage != STAGE_EGG) { /* eggs keep their outfit for later */
+        int phase = tick / 3;
+        for (int slot = WEAR_HAT; slot <= WEAR_HELD; slot++) {
+            int id = pet_worn(p, slot), dx, dy;
+            bool ghosted = pet_unlock_slot(ghost) == slot;
+            if (ghosted) id = ghost;
+            if (id < 0) continue;
+            wear_nudge(p->stage, slot, &dx, &dy);
+            blit_item(c, &COSMETICS[id], px, py, s, dx, dy, ghosted ? SILHOUETTE : 0, phase);
+        }
+        if (pet_worn(p, WEAR_SHINY) >= 0 && (tick / 4) % 3 != 2) blit_item(c, &SHINE, px, py, s, 0, 0, 0, tick / 4);
     }
     int right = x + 16 * s;
     switch (mood) {
@@ -93,6 +151,129 @@ void ui_draw_pet(Canvas *c, const App *app, int x, int y, int s, int64_t now_ms)
         break;
     }
 }
+
+void ui_draw_pet(Canvas *c, const App *app, int x, int y, int s, int64_t now_ms) {
+    const Pet *p = &app->pet;
+    Mood mood = pet_mood(p, app_now(app), app->tz_offset, app->n_alerts, app->n_running);
+    draw_pet(c, p, mood, x, y, s, now_ms, -1);
+}
+
+/* ---- item art outside the pet: icons, shelf ornaments, rug motifs ---------------------------- */
+
+typedef struct {
+    int x0, y0, x1, y1; /* inclusive bounding box in sprite pixels; x0 > x1 when empty */
+} Box;
+
+static Box art_box(const Cosmetic *k) {
+    Box b = {16, 16, -1, -1};
+    for (int r = 0; r < 16; r++)
+        for (int col = 0; col < 16; col++) {
+            if (k->art[r][col] == '.') continue;
+            if (col < b.x0) b.x0 = col;
+            if (col > b.x1) b.x1 = col;
+            if (r < b.y0) b.y0 = r;
+            if (r > b.y1) b.y1 = r;
+        }
+    return b;
+}
+
+/* Den animation for desk ornaments: the lava lamp's blobs drift, the pumpkin's candle flickers. */
+static Cosmetic animated(int id, int64_t now_ms) {
+    Cosmetic k = COSMETICS[id];
+    if (id == U_PUMPKIN) {
+        static const uint32_t FLICKER[4] = {0xffe27a, 0xffd04a, 0xfff2b0, 0xffc838};
+        k.ink[2] = FLICKER[(now_ms / 180 + (now_ms / 470) % 3) % 4];
+    } else if (id == U_LAVA_LAMP) {
+        static char rows[16][17];
+        for (int r = 0; r < 16; r++) {
+            memcpy(rows[r], COSMETICS[id].art[r], 17);
+            for (int col = 0; col < 16; col++)
+                if (rows[r][col] == '2') rows[r][col] = '1';
+            k.art[r] = rows[r];
+        }
+        /* two blobs bobbing out of phase inside the glass (rows 3..10) */
+        int t = (int)(now_ms / 260);
+        int a = 3 + (t % 14 < 7 ? t % 7 : 6 - t % 7), b = 10 - (t / 2 % 14 < 7 ? t / 2 % 7 : 6 - t / 2 % 7);
+        rows[a][7] = rows[a][8] = '2';
+        rows[b][6] = '2';
+        if (b + 1 <= 10) rows[b + 1][6] = '2';
+    }
+    return k;
+}
+
+/* Any item (or the shiny coat) centered in a w x h box, at most max_s pixels per art pixel. */
+static void draw_icon(Canvas *c, const Pet *p, int id, int x, int y, int w, int h, bool locked, int max_s,
+                      int64_t now_ms) {
+    int tick = (int)(now_ms / 125);
+    if (id == U_SHINY) { /* the pet's own shape in its shiny coat */
+        int s = (w < h ? w : h) / 16, px = x + (w - 16 * s) / 2, py = y + (h - 16 * s) / 2;
+        if (locked) {
+            for (int r = 0; r < 16; r++)
+                for (int col = 0; col < 16; col++)
+                    if (SPR_KID[r][col] != '.') gfx_rect(c, px + col * s, py + r * s, s, s, SILHOUETTE);
+            return;
+        }
+        const Palette *pal = &SHINY_PALETTES[pal_index(p)];
+        blit_layer(c, SPR_KID, px, py, s, pal, MOOD_IDLE, false, false);
+        if (p->stage == STAGE_ADULT) blit_layer(c, OVL_WINGS, px, py, s, pal, MOOD_IDLE, false, false);
+        blit_item(c, &SHINE, px, py, s, 0, 0, 0, tick / 4);
+        return;
+    }
+    Cosmetic k = locked ? COSMETICS[id] : animated(id, now_ms);
+    Box b = art_box(&k);
+    if (b.x1 < b.x0) return;
+    int bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+    int s = w / bw < h / bh ? w / bw : h / bh;
+    if (s > max_s) s = max_s;
+    if (s < 1) s = 1;
+    int ox = x + (w - bw * s) / 2 - b.x0 * s, oy = y + (h - bh * s) / 2 - b.y0 * s;
+    if (pet_unlock_slot(id) == WEAR_ROOM && !locked) gfx_rect(c, x + 2, y + (h - bh * s) / 2 - 6, w - 4, bh * s + 12, RUG_SWATCH);
+    blit_item(c, &k, ox, oy, s, 0, 0, locked ? SILHOUETTE : 0, tick / 3);
+}
+
+/* A wall shelf (plank, lip, two brackets, soft shadow) w wide at y with an ornament standing on it. */
+static void draw_shelf(Canvas *c, int id, int x, int w, int y, int s, uint32_t silhouette, int64_t now_ms) {
+    gfx_rect(c, x + s, y + 3 * s, w - s, s + 1, 0x000000);
+    gfx_rect(c, x, y, w, 3 * s, 0x8a5a3a);
+    gfx_rect(c, x, y, w, s, 0xb07a50);
+    gfx_rect(c, x + 2 * s, y + 3 * s, 2 * s, 4 * s, 0x6a4028);
+    gfx_rect(c, x + w - 4 * s, y + 3 * s, 2 * s, 4 * s, 0x6a4028);
+    Cosmetic k = silhouette ? COSMETICS[id] : animated(id, now_ms);
+    Box b = art_box(&k);
+    int bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+    blit_item(c, &k, x + (w - bw * s) / 2 - b.x0 * s, y - bh * s - b.y0 * s, s, 0, 0, silhouette, (int)(now_ms / 375));
+}
+
+/* A rug's motif tiled in staggered rows over [x0,x1) x [y0,y1). */
+static void draw_rug(Canvas *c, int id, int x0, int y0, int x1, int y1, int s, int rows, uint32_t silhouette) {
+    const Cosmetic *k = &COSMETICS[id];
+    Box b = art_box(k);
+    int mw = (b.x1 - b.x0 + 1) * s, mh = (b.y1 - b.y0 + 1) * s, gap = mw * 3, row_h = (y1 - y0) / rows;
+    for (int r = 0; r < rows; r++) {
+        int y = y0 + r * row_h + (row_h - mh) / 2;
+        for (int x = x0 + 6 + (r % 2) * gap / 2; x + mw <= x1 - 4; x += gap)
+            blit_item(c, k, x - b.x0 * s, y - b.y0 * s, s, 0, 0, silhouette, 0);
+    }
+}
+
+/* Den ornament spots agreed with scene.c's layout: a little wall shelf at the right edge
+ * (x 590-634, y 48-152) and the rug's inner field (x 112-528, y 390-440). */
+#define SHELF_X 592
+#define SHELF_W 40
+#define SHELF_Y 128 /* plank 128-137, brackets to 149 */
+#define RUG_X0 112
+#define RUG_X1 528
+#define RUG_Y0 390
+#define RUG_Y1 440
+
+void pet_draw_den_decor(Canvas *c, const App *app, int64_t now_ms) {
+    if (!app->pet_ready) return;
+    int rug = pet_worn(&app->pet, WEAR_ROOM), orn = pet_worn(&app->pet, WEAR_DESK);
+    if (rug >= 0) draw_rug(c, rug, RUG_X0, RUG_Y0, RUG_X1, RUG_Y1, 2, 2, 0);
+    if (orn >= 0) draw_shelf(c, orn, SHELF_X, SHELF_W, SHELF_Y, 3, 0, now_ms);
+}
+
+/* ---- Pet screen: stats page ------------------------------------------------------------------ */
 
 static void stat_line(Canvas *c, int x, int y, const char *label, const char *value) {
     gfx_text(c, FONT_BODY, x, y, DIM, label, 0);
@@ -127,15 +308,18 @@ const char *pet_mood_line(const App *app, int64_t now) {
     }
 }
 
-void pet_screen_draw(Canvas *c, const App *app, int64_t now_ms) {
-    if (!app->pet_ready) {
-        gfx_text(c, FONT_BODY, 20, 200, DIM, "Waiting for a bridge (pet runs on its clock)...", 0);
-        return;
-    }
+static int count_found(const Pet *p) {
+    int n = 0;
+    for (int id = 0; id < N_UNLOCKS; id++) n += pet_has(p, id);
+    return n;
+}
+
+static const int SCREEN_SCALE[N_STAGES] = {9, 9, 10, 11, 12};
+
+static void draw_stats(Canvas *c, const App *app, int64_t now_ms) {
     const Pet *p = &app->pet;
     int64_t now = app_now(app);
-    static const int SCALE[N_STAGES] = {9, 9, 10, 11, 12};
-    int s = SCALE[p->stage], size = 16 * s;
+    int s = SCREEN_SCALE[p->stage], size = 16 * s;
     ui_draw_pet(c, app, 24 + (204 - size) / 2, HEADER_H + 20 + (204 - size), s, now_ms);
 
     int x = 250, y = HEADER_H + 14;
@@ -164,6 +348,8 @@ void pet_screen_draw(Canvas *c, const App *app, int64_t now_ms) {
     stat_line(c, x, y + 52, "Best day", tok);
     snprintf(val, sizeof val, "%lld", (long long)p->lifetime_turns);
     stat_line(c, x, y + 76, "Turns ever", val);
+    snprintf(val, sizeof val, "%d of %d found", count_found(p), N_UNLOCKS);
+    stat_line(c, x, y + 100, "Wardrobe", val);
 
     y = HEADER_H + 250;
     gfx_text(c, FONT_BODY, 24, y, TEXT, "DIET (output tokens eaten)", 0);
@@ -182,14 +368,181 @@ void pet_screen_draw(Canvas *c, const App *app, int64_t now_ms) {
     gfx_text(c, FONT_BODY, 24, y + 6, FAINT, hint, 0);
 }
 
+/* ---- Pet screen: wardrobe -------------------------------------------------------------------- */
+
+#define MAX_PER_SLOT 8
+
+/* Ids in a slot, in catalog order. */
+static int slot_items(int slot, int *ids) {
+    int n = 0;
+    for (int id = 0; id < N_UNLOCKS && n < MAX_PER_SLOT; id++)
+        if (pet_unlock_slot(id) == slot) ids[n++] = id;
+    return n;
+}
+
+static int wardrobe_id(const App *app) {
+    int ids[MAX_PER_SLOT], n = slot_items(app->wardrobe_slot, ids);
+    return n ? ids[app->wardrobe_sel < n ? app->wardrobe_sel : n - 1] : -1;
+}
+
+#define TAB_Y (HEADER_H + 6)
+#define TAB_H 28
+#define TAB_W 88
+#define LIST_X 236
+#define LIST_Y (HEADER_H + 46)
+#define ROW_H 62
+#define ICON 52
+
+static void draw_preview(Canvas *c, const App *app, int id, int64_t now_ms) {
+    const Pet *p = &app->pet;
+    int slot = pet_unlock_slot(id);
+    bool owned = pet_has(p, id);
+    int bx = 14, by = LIST_Y, bw = 206, bh = 236;
+    gfx_rect(c, bx, by, bw, bh, PANEL);
+    if (slot == WEAR_DESK || slot == WEAR_ROOM) {
+        /* den items: a big look at the ornament / rug, the pet isn't wearing these */
+        uint32_t sil = owned ? 0 : SILHOUETTE;
+        gfx_rect(c, bx, by + bh - 40, bw, 40, 0x2a2140);
+        if (slot == WEAR_DESK) {
+            draw_shelf(c, id, bx + 33, bw - 66, by + 140, 6, sil, now_ms);
+        } else {
+            gfx_rect(c, bx + 14, by + 50, bw - 28, 110, owned ? RUG_SWATCH : BG);
+            gfx_frame(c, bx + 14, by + 50, bw - 28, 110, 4, owned ? 0x7a5a8e : FAINT);
+            draw_rug(c, id, bx + 22, by + 58, bx + bw - 22, by + 152, 3, 3, sil);
+        }
+        gfx_text(c, FONT_BODY, bx + 12, by + bh - 30, DIM, slot == WEAR_DESK ? "On the den shelf" : "On the den rug", 0);
+        return;
+    }
+    Pet look = *p;
+    int ghost = -1;
+    if (id >= 0 && owned) look.equipped[slot] = (int8_t)id; /* try it on */
+    else if (id >= 0 && slot != WEAR_SHINY) ghost = id;     /* a peek at the shape */
+    Mood mood = pet_mood(p, app_now(app), app->tz_offset, app->n_alerts, app->n_running);
+    int s = 11, size = 16 * s;
+    draw_pet(c, &look, mood, bx + (bw - size) / 2, by + 26, s, now_ms, p->stage == STAGE_EGG ? -1 : ghost);
+    if (p->stage == STAGE_EGG) gfx_text(c, FONT_BODY, bx + 12, by + bh - 28, DIM, "Worn once it hatches", 0);
+}
+
+static void draw_wardrobe(Canvas *c, const App *app, int64_t now_ms) {
+    const Pet *p = &app->pet;
+    for (int t = 0; t < N_WEAR; t++) {
+        int x = 12 + t * TAB_W;
+        bool on = t == app->wardrobe_slot;
+        gfx_rect(c, x + 2, TAB_Y, TAB_W - 4, TAB_H, on ? PANEL_HI : PANEL);
+        if (on) gfx_rect(c, x + 2, TAB_Y + TAB_H - 3, TAB_W - 4, 3, SAY_COL);
+        const char *name = pet_slot_name(t);
+        int tw = (int)strlen(name) * gfx_font_w(FONT_BODY);
+        gfx_text(c, FONT_BODY, x + (TAB_W - tw) / 2, TAB_Y + 3, on ? TEXT : DIM, name, 0);
+        if (pet_worn(p, t) >= 0) gfx_rect(c, x + 8, TAB_Y + 11, 5, 5, GROW_COL); /* something on */
+    }
+
+    int ids[MAX_PER_SLOT], n = slot_items(app->wardrobe_slot, ids);
+    int sel = app->wardrobe_sel < n ? app->wardrobe_sel : n - 1;
+    draw_preview(c, app, n ? ids[sel] : -1, now_ms);
+
+    for (int i = 0; i < n; i++) {
+        int id = ids[i], y = LIST_Y + i * ROW_H;
+        bool owned = pet_has(p, id), worn = pet_worn(p, app->wardrobe_slot) == id, on = i == sel;
+        gfx_rect(c, LIST_X, y, SCREEN_W - LIST_X - 14, ROW_H - 6, on ? PANEL_HI : PANEL);
+        if (on) gfx_frame(c, LIST_X, y, SCREEN_W - LIST_X - 14, ROW_H - 6, 2, SAY_COL);
+        gfx_rect(c, LIST_X + 4, y + 2, ICON, ICON, BG);
+        int slot = app->wardrobe_slot;
+        draw_icon(c, p, id, LIST_X + 6, y + 4, ICON - 4, ICON - 4, !owned, 5, now_ms);
+        int tx = LIST_X + ICON + 16;
+        gfx_text(c, FONT_BODY, tx, y + 6, owned ? TEXT : DIM, owned ? pet_unlock_name(id) : "???", 0);
+        if (worn) {
+            const char *tag = slot == WEAR_DESK ? "IN THE DEN" : slot == WEAR_ROOM ? "ROLLED OUT" : "WEARING";
+            int tw = (int)strlen(tag) * gfx_font_w(FONT_BODY);
+            int rx = SCREEN_W - 14 - 10 - tw;
+            gfx_rect(c, rx - 6, y + 6, tw + 12, 20, GROW_COL);
+            gfx_text(c, FONT_BODY, rx, y + 6, BG, tag, 0);
+        }
+        if (owned)
+            gfx_text(c, FONT_BODY, tx, y + 30, on ? DIM : FAINT, on ? (worn ? "A: take off" : "A: put on") : pet_unlock_hint(id), 0);
+        else
+            gfx_text_fit(c, FONT_BODY, tx, y + 30, DIM, pet_unlock_hint(id), SCREEN_W - tx - 20);
+    }
+
+    char line[48];
+    int found = count_found(p);
+    snprintf(line, sizeof line, "Found %d of %d", found, N_UNLOCKS);
+    int y = LIST_Y + 236 + 14;
+    gfx_text(c, FONT_BODY, 14, y, DIM, line, 0);
+    gfx_bar(c, 14, y + 26, 206, 8, (double)found / N_UNLOCKS, FAINT, GROW_COL);
+    if (now_ms < app->bubble_until_ms) gfx_text_wrap(c, FONT_BODY, 14, y + 44, 206, 3, SAY_COL, app->bubble);
+    else gfx_text_wrap(c, FONT_BODY, 14, y + 44, 206, 3, FAINT, "Kept forever. New ones appear as it grows.");
+}
+
+void pet_screen_draw(Canvas *c, const App *app, int64_t now_ms) {
+    if (!app->pet_ready) {
+        gfx_text(c, FONT_BODY, 20, 200, DIM, "Waiting for a bridge (pet runs on its clock)...", 0);
+        return;
+    }
+    if (app->wardrobe_open) draw_wardrobe(c, app, now_ms);
+    else draw_stats(c, app, now_ms);
+}
+
 const char *pet_screen_hints(const App *app) {
-    (void)app;
-    return "X pat  L/R switch  START clear  MENU quit";
+    if (app->pet_ready && app->wardrobe_open) return "D-pad browse  A put on/off  B close  X pat";
+    return "X pat  Y wardrobe  L/R switch  START clear  MENU quit";
+}
+
+static void wardrobe_say(App *app, const char *msg, int64_t now_ms) {
+    snprintf(app->bubble, sizeof app->bubble, "%s", msg);
+    app->bubble_until_ms = now_ms + BUBBLE_MS;
+}
+
+/* Selecting a tab lands on what's worn there, else the top item. */
+static void wardrobe_pick_slot(App *app, int slot) {
+    app->wardrobe_slot = (slot + N_WEAR) % N_WEAR;
+    int ids[MAX_PER_SLOT], n = slot_items(app->wardrobe_slot, ids), worn = pet_worn(&app->pet, app->wardrobe_slot);
+    app->wardrobe_sel = 0;
+    for (int i = 0; i < n; i++)
+        if (ids[i] == worn) app->wardrobe_sel = i;
 }
 
 bool pet_screen_handle(App *app, Button b, int64_t now_ms) {
-    (void)app, (void)b, (void)now_ms;
-    return false;
+    if (!app->pet_ready) return false;
+    if (!app->wardrobe_open) {
+        if (b != PAD_Y) return false;
+        app->wardrobe_open = true;
+        wardrobe_pick_slot(app, app->wardrobe_slot);
+        app->bubble_until_ms = 0;
+        return true;
+    }
+    int ids[MAX_PER_SLOT], n = slot_items(app->wardrobe_slot, ids);
+    switch (b) {
+    case PAD_Y:
+    case PAD_B: app->wardrobe_open = false; return true;
+    case PAD_L1:
+    case PAD_R1: app->wardrobe_open = false; return false; /* still switches screens */
+    case PAD_X: return false;                               /* still pats */
+    case PAD_LEFT: wardrobe_pick_slot(app, app->wardrobe_slot - 1); return true;
+    case PAD_RIGHT: wardrobe_pick_slot(app, app->wardrobe_slot + 1); return true;
+    case PAD_UP:
+        if (n) app->wardrobe_sel = (app->wardrobe_sel + n - 1) % n;
+        return true;
+    case PAD_DOWN:
+        if (n) app->wardrobe_sel = (app->wardrobe_sel + 1) % n;
+        return true;
+    case PAD_A: {
+        int id = wardrobe_id(app);
+        char msg[64];
+        if (id < 0) return true;
+        if (!pet_has(&app->pet, id)) {
+            snprintf(msg, sizeof msg, "Not yet! %s.", pet_unlock_hint(id));
+        } else {
+            bool on = pet_worn(&app->pet, app->wardrobe_slot) != id;
+            pet_toggle_equip(&app->pet, id);
+            int slot = app->wardrobe_slot;
+            if (slot == WEAR_DESK) snprintf(msg, sizeof msg, on ? "%s is on the den shelf." : "%s put away.", pet_unlock_name(id));
+            else if (slot == WEAR_ROOM) snprintf(msg, sizeof msg, on ? "%s rolled out!" : "%s rolled up.", pet_unlock_name(id));
+            else if (slot == WEAR_SHINY) snprintf(msg, sizeof msg, "%s", on ? "So shiny!" : "Back to its usual colors.");
+            else snprintf(msg, sizeof msg, on ? "Wearing the %s!" : "Took off the %s.", pet_unlock_name(id));
+        }
+        wardrobe_say(app, msg, now_ms);
+        return true;
+    }
+    default: return true;
+    }
 }
-
-void pet_draw_den_decor(Canvas *c, const App *app, int64_t now_ms) { (void)c, (void)app, (void)now_ms; }

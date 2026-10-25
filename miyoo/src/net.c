@@ -33,6 +33,8 @@ bool config_load(const char *path, Config *cfg, char *err, size_t errlen) {
     cfg->awake_on_power = true;
     cfg->volume = 4;
     cfg->quiet_nights = true;
+    cfg->night_dim = 1;
+    cfg->battery_care = true;
     FILE *f = fopen(path, "r");
     if (!f) {
         snprintf(err, errlen, "missing %s", path);
@@ -78,6 +80,11 @@ bool config_load(const char *path, Config *cfg, char *err, size_t errlen) {
             cfg->volume = v < 0 ? 0 : v > 10 ? 10 : v;
         } else if (!strcmp(key, "quiet_nights")) {
             cfg->quiet_nights = atoi(val) != 0;
+        } else if (!strcmp(key, "night_dim")) {
+            int v = atoi(val);
+            cfg->night_dim = v < 0 ? -1 : v > 10 ? 10 : v;
+        } else if (!strcmp(key, "battery_care")) {
+            cfg->battery_care = atoi(val) != 0;
         }
     }
     fclose(f);

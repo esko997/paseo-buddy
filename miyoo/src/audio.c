@@ -114,15 +114,27 @@ static const Note EVOLVE_NOTES[] = {
     NT(470, 260, TRI, 55, 0, 50, 40, 10, 120, 60, 360),
 };
 
+/* A little sparkle: quick C-major run up to C7, then two faint high twinkles (E7, G7). */
+static const Note UNLOCK_NOTES[] = {
+    NT(0, 45, TRI, 84, 0, 50, 55, 4, 30, 50, 90),
+    NT(65, 45, TRI, 88, 0, 50, 55, 4, 30, 50, 90),
+    NT(130, 45, TRI, 91, 0, 50, 55, 4, 30, 50, 90),
+    NT(195, 140, TRI, 96, 0, 50, 60, 5, 60, 50, 300),
+    NT(195, 110, SQ, 96, 0, 12, 8, 6, 50, 40, 260),
+    NT(320, 40, TRI, 100, 0, 50, 28, 3, 20, 40, 130),
+    NT(410, 40, TRI, 103, 0, 50, 22, 3, 20, 40, 170),
+};
+
 #define CUE(arr, db, prio, gap) {arr, (int)(sizeof arr / sizeof arr[0]), db, prio, gap}
 static const Cue CUES[SFX_COUNT] = {
-    [SFX_FINISHED] = CUE(FINISHED_NOTES, -3.0f, 2, 4000),
-    [SFX_NEEDS_YOU] = CUE(NEEDS_YOU_NOTES, 0.0f, 5, 4000),
-    [SFX_FAILED] = CUE(FAILED_NOTES, -3.0f, 4, 4000),
+    [SFX_FINISHED] = CUE(FINISHED_NOTES, -3.0f, 3, 4000),
+    [SFX_NEEDS_YOU] = CUE(NEEDS_YOU_NOTES, 0.0f, 6, 4000),
+    [SFX_FAILED] = CUE(FAILED_NOTES, -3.0f, 5, 4000),
     [SFX_NOM] = CUE(NOM_NOTES, -12.0f, 0, 20000),
     [SFX_PAT] = CUE(PAT_NOTES, -6.0f, 1, 1500),
-    [SFX_HATCH] = CUE(HATCH_NOTES, -3.0f, 3, 4000),
-    [SFX_EVOLVE] = CUE(EVOLVE_NOTES, -3.0f, 3, 4000),
+    [SFX_UNLOCK] = CUE(UNLOCK_NOTES, -6.0f, 2, 4000),
+    [SFX_HATCH] = CUE(HATCH_NOTES, -3.0f, 4, 4000),
+    [SFX_EVOLVE] = CUE(EVOLVE_NOTES, -3.0f, 4, 4000),
 };
 
 typedef struct {

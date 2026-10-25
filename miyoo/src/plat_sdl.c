@@ -91,7 +91,16 @@ void plat_backlight(bool on) {
 int plat_battery(void) { return -1; }
 
 /* Desktop: set PAGER_CHARGING=1 to simulate USB power. */
-bool plat_charging(void) { return getenv("PAGER_CHARGING") != NULL; }
+bool plat_on_power(void) { return getenv("PAGER_CHARGING") != NULL; }
+
+void plat_battery_care(bool on) { fprintf(stderr, "battery care: %s (no PMIC on desktop)\n", on ? "on" : "off"); }
+
+void plat_brightness(int level) { fprintf(stderr, "brightness %d\n", level); }
+
+/* Desktop: pretend Onion's default level. */
+int plat_brightness_setting(void) { return 7; }
+
+void plat_stay_awake(bool on) { fprintf(stderr, "stay awake: %d\n", on); }
 
 /* Audio: SDL's own callback thread. Initialised separately from video so a machine without a sound
  * device still gets a window. */

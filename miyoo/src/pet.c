@@ -19,17 +19,144 @@ static int64_t local_day(int64_t now, int32_t tz_offset) {
     return local >= 0 ? local / 86400 : (local - 86399) / 86400;
 }
 
+static int local_hour(int64_t now, int32_t tz_offset) {
+    int64_t local = now + tz_offset;
+    return (int)(((local % 86400) + 86400) % 86400 / 3600);
+}
+
+/* ---- cosmetics catalog: every unlock is a milestone or a date, and is kept forever ---------- */
+
+typedef struct {
+    const char *name, *hint;
+    WearSlot slot;
+} UnlockInfo;
+
+static const UnlockInfo UNLOCKS[N_UNLOCKS] = {
+    [U_SPROUT] = {"Sprout", "Eat 100k tokens", WEAR_HAT},
+    [U_PARTY_HAT] = {"Party hat", "Be here on its birthday", WEAR_HAT},
+    [U_WITCH_HAT] = {"Witch hat", "Hang out in Halloween week", WEAR_HAT},
+    [U_HOLIDAY_HAT] = {"Holiday hat", "Hang out in December", WEAR_HAT},
+    [U_CROWN] = {"Crown", "Eat 10M tokens", WEAR_HAT},
+    [U_GLASSES] = {"Round glasses", "Finish 100 turns", WEAR_FACE},
+    [U_SHADES] = {"Shades", "Eat 1M tokens", WEAR_FACE},
+    [U_STAR_SPECS] = {"Star specs", "Hang out at New Year", WEAR_FACE},
+    [U_MONOCLE] = {"Monocle", "Finish 1000 turns", WEAR_FACE},
+    [U_BOWTIE] = {"Bowtie", "Finish 10 turns", WEAR_NECK},
+    [U_SCARF] = {"Cozy scarf", "Be friends for 30 days", WEAR_NECK},
+    [U_MEDAL] = {"Gold medal", "Eat 1M tokens in one day", WEAR_NECK},
+    [U_LOLLIPOP] = {"Lollipop", "Be friends for 7 days", WEAR_HELD},
+    [U_COCOA] = {"Cocoa mug", "Snack between 0:00 and 4:00", WEAR_HELD},
+    [U_WAND] = {"Star wand", "Finish 25 turns in one day", WEAR_HELD},
+    [U_TROPHY] = {"Trophy", "Grow up into an adult", WEAR_DESK},
+    [U_LAVA_LAMP] = {"Lava lamp", "Taste all 4 model families", WEAR_DESK},
+    [U_BONSAI] = {"Bonsai", "Be friends for 100 days", WEAR_DESK},
+    [U_PUMPKIN] = {"Jack-o'-lantern", "Hang out in Halloween week", WEAR_DESK},
+    [U_HEART_RUG] = {"Heart rug", "Hatch from the egg", WEAR_ROOM},
+    [U_STAR_RUG] = {"Star rug", "Eat 100k tokens in one day", WEAR_ROOM},
+    [U_SHINY] = {"Shiny coat", "Eat 100M tokens", WEAR_SHINY},
+};
+
+static const char *SLOT_NAMES[N_WEAR] = {"Hat", "Face", "Neck", "Held", "Desk", "Room", "Shiny"};
+
+#define BIT(id) ((uint64_t)1 << (id))
+
+const char *pet_unlock_name(int id) { return id >= 0 && id < N_UNLOCKS ? UNLOCKS[id].name : "?"; }
+const char *pet_unlock_hint(int id) { return id >= 0 && id < N_UNLOCKS ? UNLOCKS[id].hint : ""; }
+int pet_unlock_slot(int id) { return id >= 0 && id < N_UNLOCKS ? (int)UNLOCKS[id].slot : -1; }
+const char *pet_slot_name(int slot) { return slot >= 0 && slot < N_WEAR ? SLOT_NAMES[slot] : "?"; }
+bool pet_has(const Pet *p, int id) { return id >= 0 && id < N_UNLOCKS && (p->unlocked & BIT(id)); }
+
+int pet_worn(const Pet *p, int slot) {
+    if (slot < 0 || slot >= N_WEAR) return -1;
+    int id = p->equipped[slot];
+    return pet_has(p, id) && pet_unlock_slot(id) == slot ? id : -1;
+}
+
+bool pet_toggle_equip(Pet *p, int id) {
+    if (!pet_has(p, id)) return false;
+    int slot = pet_unlock_slot(id);
+    p->equipped[slot] = (int8_t)(p->equipped[slot] == id ? -1 : id);
+    return true;
+}
+
+/* Proleptic Gregorian date of a day number (days since 1970-01-01); H. Hinnant's civil_from_days. */
+static void civil(int64_t days, int *year, int *month, int *mday) {
+    days += 719468;
+    int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+    int64_t doe = days - era * 146097;
+    int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int64_t mp = (5 * doy + 2) / 153;
+    *mday = (int)(doy - (153 * mp + 2) / 5 + 1);
+    *month = (int)(mp < 10 ? mp + 3 : mp - 9);
+    *year = (int)(yoe + era * 400 + (*month <= 2));
+}
+
+static bool leap(int y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0; }
+
+/* Everything the pet qualifies for right now, from its stats and the bridge-local date. */
+static uint64_t qualifies(const Pet *p, int64_t now, int32_t tz_offset) {
+    uint64_t m = 0;
+    if (p->xp >= 100000) m |= BIT(U_SPROUT);
+    if (p->xp >= 1000000) m |= BIT(U_SHADES);
+    if (p->xp >= 10000000) m |= BIT(U_CROWN);
+    if (p->xp >= 100000000) m |= BIT(U_SHINY);
+    if (p->lifetime_turns >= 10) m |= BIT(U_BOWTIE);
+    if (p->lifetime_turns >= 100) m |= BIT(U_GLASSES);
+    if (p->lifetime_turns >= 1000) m |= BIT(U_MONOCLE);
+    if (p->best_day_tokens >= 100000) m |= BIT(U_STAR_RUG);
+    if (p->best_day_tokens >= 1000000) m |= BIT(U_MEDAL);
+    if (p->today_turns >= 25 && p->day == local_day(now, tz_offset)) m |= BIT(U_WAND);
+    if (p->stage > STAGE_EGG) m |= BIT(U_HEART_RUG);
+    if (p->stage == STAGE_ADULT) m |= BIT(U_TROPHY);
+    bool all = true;
+    for (int i = 0; i < N_FAMILIES; i++) all &= p->diet[i] > 0;
+    if (all) m |= BIT(U_LAVA_LAMP);
+
+    int64_t age = now - p->born;
+    if (age >= 7 * 86400) m |= BIT(U_LOLLIPOP);
+    if (age >= 30 * 86400) m |= BIT(U_SCARF);
+    if (age >= 100 * 86400) m |= BIT(U_BONSAI);
+
+    int64_t today = local_day(now, tz_offset), born_day = local_day(p->born, tz_offset);
+    int y, mo, d, by, bm, bd;
+    civil(today, &y, &mo, &d);
+    civil(born_day, &by, &bm, &bd);
+    if (mo == 10 && d >= 25) m |= BIT(U_WITCH_HAT) | BIT(U_PUMPKIN);
+    if (mo == 12) m |= BIT(U_HOLIDAY_HAT);
+    if ((mo == 12 && d == 31) || (mo == 1 && d <= 2)) m |= BIT(U_STAR_SPECS);
+    if (bm == 2 && bd == 29 && !leap(y)) bd = 28; /* leap-day pets party on the 28th */
+    if (y > by && mo == bm && d == bd) m |= BIT(U_PARTY_HAT);
+    return m;
+}
+
+/* Adds ids to the collection; a new item is worn right away if its slot is empty (never SHINY,
+ * which recolors the pet and stays opt-in). Returns the ids that were new. */
+static uint64_t grant(Pet *p, uint64_t ids) {
+    uint64_t fresh = ids & ~p->unlocked;
+    p->unlocked |= fresh;
+    for (int id = 0; id < N_UNLOCKS; id++) {
+        int slot = UNLOCKS[id].slot;
+        if ((fresh & BIT(id)) && slot != WEAR_SHINY && pet_worn(p, slot) < 0) p->equipped[slot] = (int8_t)id;
+    }
+    return fresh;
+}
+
+uint64_t pet_check_unlocks(Pet *p, int64_t now, int32_t tz_offset) {
+    return grant(p, qualifies(p, now, tz_offset));
+}
+
 void pet_init(Pet *p, const char *name, int64_t now) {
     memset(p, 0, sizeof *p);
     snprintf(p->name, sizeof p->name, "%s", name);
     p->born = now;
     p->stage = STAGE_EGG;
     p->adult_family = FAM_OTHER;
+    memset(p->equipped, -1, sizeof p->equipped);
 }
 
 bool pet_asleep(int64_t now, int32_t tz_offset) {
-    int64_t local = now + tz_offset;
-    int hour = (int)(((local % 86400) + 86400) % 86400 / 3600);
+    int hour = local_hour(now, tz_offset);
     return hour >= 23 || hour < 7;
 }
 
@@ -102,6 +229,9 @@ FeedResult pet_feed(Pet *p, const Feed *f, int64_t now, int32_t tz_offset) {
     if (p->stage == STAGE_ADULT && before != STAGE_ADULT) p->adult_family = pet_favorite(p);
     r.hatched = before == STAGE_EGG && p->stage > STAGE_EGG;
     r.evolved = !r.hatched && p->stage != before;
+    uint64_t earned = qualifies(p, now, tz_offset);
+    if (!backlog && r.tokens > 0 && local_hour(now, tz_offset) < 4) earned |= BIT(U_COCOA); /* a night owl snack */
+    r.unlocked = grant(p, earned);
     return r;
 }
 
@@ -123,16 +253,6 @@ bool pet_save_needed(const Pet *now, const Pet *saved) {
             return true;
     }
     return false;
-}
-
-const char *pet_unlock_name(int id) {
-    (void)id;
-    return "?";
-}
-
-uint64_t pet_check_unlocks(Pet *p, int64_t now, int32_t tz_offset) {
-    (void)p, (void)now, (void)tz_offset;
-    return 0;
 }
 
 Mood pet_mood(const Pet *p, int64_t now, int32_t tz_offset, int waiting, int running) {
@@ -160,6 +280,9 @@ bool pet_save(const Pet *p, const char *path) {
             (long long)p->lifetime_turns, (long long)p->day, (long long)p->today_tokens, (long long)p->today_turns,
             (long long)p->best_day_tokens);
     fprintf(f, "cheer_until=%lld\n", (long long)p->cheer_until);
+    fprintf(f, "unlocked=%llx\nequipped=", (unsigned long long)p->unlocked);
+    for (int i = 0; i < 8; i++) fprintf(f, i ? " %d" : "%d", p->equipped[i]);
+    fputc('\n', f);
     for (int i = 0; i < PET_LEDGERS; i++) {
         const LedgerSeen *s = &p->seen[i];
         if (!s->ledger_id[0]) continue;
@@ -177,6 +300,7 @@ bool pet_load(Pet *p, const char *path) {
     if (!f) return false;
     memset(p, 0, sizeof *p);
     p->adult_family = FAM_OTHER;
+    memset(p->equipped, -1, sizeof p->equipped); /* files from before cosmetics: nothing worn */
     char line[256];
     int n_seen = 0;
     long long a, b, c, d, e, g, h;
@@ -198,7 +322,11 @@ bool pet_load(Pet *p, const char *path) {
         else if (!strcmp(k, "today_turns")) p->today_turns = atoll(v);
         else if (!strcmp(k, "best_day_tokens")) p->best_day_tokens = atoll(v);
         else if (!strcmp(k, "cheer_until")) p->cheer_until = atoll(v);
-        else if (!strcmp(k, "diet") && sscanf(v, "%lld %lld %lld %lld", &a, &b, &c, &d) == 4) {
+        else if (!strcmp(k, "unlocked")) p->unlocked = strtoull(v, NULL, 16);
+        else if (!strcmp(k, "equipped")) {
+            int w, n;
+            for (int i = 0; i < 8 && sscanf(v, "%d%n", &w, &n) == 1; i++, v += n) p->equipped[i] = (int8_t)w;
+        } else if (!strcmp(k, "diet") && sscanf(v, "%lld %lld %lld %lld", &a, &b, &c, &d) == 4) {
             p->diet[0] = a, p->diet[1] = b, p->diet[2] = c, p->diet[3] = d;
         } else if (!strcmp(k, "seen") && n_seen < PET_LEDGERS &&
                    sscanf(v, "%15s %lld %lld %lld %lld %lld %lld %lld", id, &a, &b, &c, &d, &e, &g, &h) == 8) {
@@ -209,5 +337,7 @@ bool pet_load(Pet *p, const char *path) {
         }
     }
     fclose(f);
+    for (int s = 0; s < 8; s++) /* only owned items, in their own slot */
+        if (pet_worn(p, s) < 0) p->equipped[s] = -1;
     return true;
 }

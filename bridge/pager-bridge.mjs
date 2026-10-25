@@ -40,6 +40,8 @@ function writeJsonAtomic(path, value) {
 // Per-agent lastUsage is cumulative per session; we keep the last value seen per agent and add
 // positive deltas. The very first snapshot after the ledger is created only sets baselines, so
 // pre-existing history does not count. Agents first seen later count from zero.
+// `today` accumulates the same deltas (output tokens, and cost in millicents) for the bridge-local
+// day and starts over at local midnight.
 const FAMILIES = ["claude", "gpt", "gemini", "other"];
 
 function familyOf(model) {
@@ -50,8 +52,19 @@ function familyOf(model) {
   return "other";
 }
 
+// Bridge-local day number: floor((unix seconds + UTC offset) / 86400), the same day the device's pet uses.
+function localDay(date = new Date()) {
+  return Math.floor((date.getTime() / 1000 - date.getTimezoneOffset() * 60) / 86400);
+}
+
+const freshToday = () => ({ day: localDay(), out: 0, costMc: 0 });
+
 function loadLedger() {
-  if (existsSync(LEDGER_PATH)) return JSON.parse(readFileSync(LEDGER_PATH, "utf8"));
+  if (existsSync(LEDGER_PATH)) {
+    const saved = JSON.parse(readFileSync(LEDGER_PATH, "utf8"));
+    saved.today ??= freshToday();
+    return saved;
+  }
   // `id` names this ledger; the device rebaselines its feed counters when it changes.
   return {
     id: randomBytes(6).toString("hex"),
@@ -59,6 +72,7 @@ function loadLedger() {
     out: Object.fromEntries(FAMILIES.map((f) => [f, 0])),
     turns: 0,
     errors: 0,
+    today: freshToday(),
     agents: {},
   };
 }
@@ -66,23 +80,43 @@ function loadLedger() {
 const ledger = loadLedger();
 let ledgerDirty = false;
 
+// Returns true if the local day changed (today's totals start over).
+function rollDay() {
+  const day = localDay();
+  if (ledger.today.day === day) return false;
+  ledger.today = { day, out: 0, costMc: 0 };
+  ledgerDirty = true;
+  return true;
+}
+
+// A smaller value than last time means the provider session restarted its counter.
+const growth = (cur, prev) => (cur >= prev ? cur - prev : cur);
+
 function updateLedger(agents) {
   const seeding = !ledger.seeded;
+  rollDay();
   for (const a of agents) {
     const out = a.lastUsage?.outputTokens ?? 0;
+    const costMc = Math.round((a.lastUsage?.totalCostUsd ?? 0) * 100_000);
     const prev = ledger.agents[a.id];
     const fam = familyOf(a.runtimeInfo?.model ?? a.model);
     if (!prev) {
-      if (!seeding && out > 0) ledger.out[fam] += out;
+      if (!seeding) {
+        ledger.out[fam] += out;
+        ledger.today.out += out;
+        ledger.today.costMc += costMc;
+      }
     } else {
-      // A smaller value means the provider session restarted its counter.
-      const delta = out >= prev.out ? out - prev.out : out;
-      if (delta > 0) ledger.out[fam] += delta;
+      const delta = growth(out, prev.out);
+      ledger.out[fam] += delta;
+      ledger.today.out += delta;
+      // Ledgers written before cost tracking have no baseline: the first sighting only sets one.
+      if (prev.costMc !== undefined) ledger.today.costMc += growth(costMc, prev.costMc);
       if (!seeding && prev.status === "running" && a.status === "idle") ledger.turns += 1;
       if (!seeding && prev.status !== "error" && a.status === "error") ledger.errors += 1;
     }
-    if (!prev || prev.out !== out || prev.status !== a.status) ledgerDirty = true;
-    ledger.agents[a.id] = { out, status: a.status };
+    if (!prev || prev.out !== out || prev.costMc !== costMc || prev.status !== a.status) ledgerDirty = true;
+    ledger.agents[a.id] = { out, costMc, status: a.status };
   }
   if (seeding) {
     ledger.seeded = true;
@@ -137,6 +171,7 @@ let rev = 0;
 const waiters = new Set();
 
 function render() {
+  rollDay();
   const visible = agents
     .filter((a) => !a.archivedAt)
     .map((a) => ({ a, bucket: bucketOf(a) }))
@@ -151,6 +186,7 @@ function render() {
     `server\t${ledger.id}\t${HOST}`,
     `daemon\t${daemonUp ? "up" : "down"}`,
     `feed\t${FAMILIES.map((f) => ledger.out[f]).join("\t")}\t${ledger.turns}\t${ledger.errors}`,
+    `today\t${ledger.today.day}\t${ledger.today.out}\t${ledger.today.costMc}`,
   ];
   for (const { a, bucket } of visible) {
     const u = a.lastUsage ?? {};
@@ -258,7 +294,8 @@ setInterval(() => {
     lastConn = state;
   }
   if (state === "connected") refresh();
-  else if (daemonUp) {
+  else {
+    // render() also starts a new day at local midnight while the daemon is away.
     daemonUp = false;
     render();
   }

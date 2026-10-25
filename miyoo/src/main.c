@@ -14,15 +14,20 @@
 #include "scene.h"
 
 #define PLAUSIBLE_EPOCH 1700000000 /* rejects a bridge reporting an unset clock */
-#define SAVE_EVERY_S 60
+#define SAVE_EVERY_S 300           /* pet.txt is only rewritten when something changed */
 #define BUBBLE_MS 6000
-#define CHARGE_POLL_MS 10000
+#define POWER_POLL_MS 15000
+#define UNLOCK_CHECK_MS 60000
+#define NIGHT_FRAME_MS 200 /* ~5 fps while dimmed for the night */
 
 static volatile sig_atomic_t g_running = 1;
 static void on_signal(int sig) {
     (void)sig;
     g_running = 0;
 }
+
+static bool g_save_now;  /* a milestone (hatch, evolve, unlock) is saved right away */
+static bool g_screen_on = true;
 
 static int64_t mono_ms(void) {
     struct timespec ts;
@@ -70,6 +75,32 @@ static void cue(const App *app, Sfx s) {
     if (app->cfg.volume <= 0) return;
     if (app->cfg.quiet_nights && app->clock_synced && pet_asleep(app_now(app), app->tz_offset)) return;
     audio_play(s);
+}
+
+/* ---- screen ---------------------------------------------------------------------------- */
+
+static void screen_wake(const App *app) {
+    if (g_screen_on) return;
+    plat_backlight(true);
+    if (app->night_dim) plat_brightness(app->cfg.night_dim);
+    g_screen_on = true;
+}
+
+static void screen_sleep(void) {
+    plat_backlight(false);
+    g_screen_on = false;
+}
+
+/* 23:00-07:00 bridge time while on external power: dim to `night_dim`, then back to the user's own
+ * Onion level (re-read from Onion's settings, so a change made overnight is respected). */
+static void night_update(App *app, bool on_power) {
+    bool want = app->cfg.night_dim >= 0 && on_power && app->clock_synced && pet_asleep(app_now(app), app->tz_offset);
+    if (want == app->night_dim) return;
+    int own = plat_brightness_setting();
+    if (want && (own < 0 || app->cfg.night_dim >= own)) return; /* could not restore it, or nothing to dim */
+    if (own >= 0) plat_brightness(want ? app->cfg.night_dim : own);
+    app->night_dim = want;
+    fprintf(stderr, "night dim %s: brightness %d\n", want ? "on" : "off", want ? app->cfg.night_dim : own);
 }
 
 /* ---- token rate history ------------------------------------------------------------- */
@@ -158,9 +189,56 @@ static void rebuild_rows(App *app) {
 /* The pet only lives on bridge time: the Miyoo's own clock may be days off. */
 static void ensure_pet(App *app) {
     if (app->pet_ready || !app->clock_synced) return;
-    if (!pet_load(&app->pet, app->pet_path)) pet_init(&app->pet, app->cfg.pet_name, app_now(app));
+    if (pet_load(&app->pet, app->pet_path)) {
+        app->saved_pet = app->pet;
+    } else {
+        pet_init(&app->pet, app->cfg.pet_name, app_now(app));
+        g_save_now = true; /* saved_pet stays zeroed, so the new pet counts as changed */
+    }
     snprintf(app->pet.name, sizeof app->pet.name, "%s", app->cfg.pet_name);
+    app->last_save = app_now(app);
     app->pet_ready = true;
+}
+
+static void save_pet(App *app) {
+    if (pet_save(&app->pet, app->pet_path)) app->saved_pet = app->pet;
+    else fprintf(stderr, "cannot save %s\n", app->pet_path);
+    app->last_save = app_now(app);
+    g_save_now = false;
+}
+
+/* One bubble and one cue per batch; `quiet` skips the cue (launch, or a louder pet moment). */
+static void announce_unlocks(App *app, uint64_t ids, bool speak, bool quiet, int64_t now_ms) {
+    if (!ids) return;
+    int first = -1, n = 0;
+    for (int id = 0; id < 64; id++) {
+        if (!(ids >> id & 1)) continue;
+        emit(app, EV_UNLOCKED, -1, NULL, pet_favorite(&app->pet), id, now_ms);
+        if (first < 0) first = id;
+        n++;
+    }
+    if (speak) {
+        char msg[64];
+        if (n == 1) snprintf(msg, sizeof msg, "New: %s!", pet_unlock_name(first));
+        else snprintf(msg, sizeof msg, "New: %s +%d more!", pet_unlock_name(first), n - 1);
+        say(app, msg, now_ms);
+    }
+    if (!quiet) cue(app, SFX_UNLOCK);
+    g_save_now = true;
+}
+
+/* Today across bridges: only bridges already on the newest local day count, so one that has not
+ * yet passed midnight (or an old bridge without a `today` line) does not add yesterday. */
+static void sum_day(App *app) {
+    int64_t day = 0;
+    for (int b = 0; b < app->cfg.n_bridges; b++)
+        if (app->have_feed[b] && app->feeds[b].today_day > day) day = app->feeds[b].today_day;
+    app->day_tokens = app->day_cost_mc = 0;
+    for (int b = 0; b < app->cfg.n_bridges; b++) {
+        if (!day || !app->have_feed[b] || app->feeds[b].today_day != day) continue;
+        app->day_tokens += app->feeds[b].today_tokens;
+        app->day_cost_mc += app->feeds[b].today_cost_mc;
+    }
 }
 
 typedef struct {
@@ -235,11 +313,13 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
             say(app, msg, now_ms);
             emit(app, EV_HATCHED, -1, NULL, pet_favorite(&app->pet), 0, now_ms);
             cue(app, SFX_HATCH);
+            g_save_now = true;
         } else if (r.evolved) {
             snprintf(msg, sizeof msg, "Evolved into a %s!", stage_name(app->pet.stage));
             say(app, msg, now_ms);
             emit(app, EV_EVOLVED, -1, NULL, pet_favorite(&app->pet), app->pet.stage, now_ms);
             cue(app, SFX_EVOLVE);
+            g_save_now = true;
         } else if (r.tokens > 0 && !first_alert) {
             char tok[16];
             format_tokens(r.tokens, tok, sizeof tok);
@@ -247,6 +327,8 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
             say(app, msg, now_ms);
             if (!out.raised) cue(app, SFX_NOM);
         }
+        bool milestone = r.hatched || r.evolved;
+        announce_unlocks(app, r.unlocked, !milestone, first || milestone, now_ms);
     }
     if (first_alert) {
         char msg[64];
@@ -255,6 +337,7 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
         cue(app, out.worst == B_NEEDS_INPUT ? SFX_NEEDS_YOU : out.worst == B_FAILED ? SFX_FAILED : SFX_FINISHED);
     }
     rebuild_rows(app);
+    sum_day(app);
     return out;
 }
 
@@ -375,6 +458,7 @@ static int run_shot(App *app, const char *out, const char *screen, int sel, int 
         free(body);
         free(f);
     }
+    if (app->pet_ready) announce_unlocks(app, pet_check_unlocks(&app->pet, app_now(app), app->tz_offset), true, true, t0);
     app->battery = plat_battery();
     if (!strcmp(screen, "pet")) app->screen = SCREEN_PET;
     else if (!strcmp(screen, "den")) app->screen = SCREEN_DEN;
@@ -390,8 +474,9 @@ static int run_shot(App *app, const char *out, const char *screen, int sel, int 
         fprintf(stderr, "cannot write %s: %s\n", out, strerror(errno));
         return 1;
     }
-    printf("rows=%d running=%d stage=%s xp=%lld bubble=%s\n", app->n_rows, app->n_running,
-           app->pet_ready ? stage_name(app->pet.stage) : "-", (long long)app->pet.xp, app->bubble);
+    printf("rows=%d running=%d stage=%s xp=%lld today=%lld tok/%lld mc bubble=%s\n", app->n_rows, app->n_running,
+           app->pet_ready ? stage_name(app->pet.stage) : "-", (long long)app->pet.xp, (long long)app->day_tokens,
+           (long long)app->day_cost_mc, app->bubble);
     return 0;
 }
 
@@ -429,11 +514,13 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (app.cfg.volume > 0 && !audio_init(app.cfg.volume)) fprintf(stderr, "audio: no output device\n");
+    plat_battery_care(app.cfg.battery_care);
     Scene *scene = scene_create();
     net_start(&app.cfg);
 
-    int64_t last_render = 0, last_tick = 0, last_input = mono_ms(), last_battery = -60000, last_charge = -60000;
-    bool screen_on = true;
+    int64_t last_render = 0, last_tick = 0, last_input = mono_ms(), last_battery = -60000, last_power = -60000;
+    int64_t last_unlock = -1, last_night = 0;
+    bool on_power = false;
     while (g_running) {
         int64_t now_ms = mono_ms();
         bool dirty = false;
@@ -448,10 +535,7 @@ int main(int argc, char **argv) {
                 buzz(&app, 2, now_ms);
                 app.alert_flash_until_ms = now_ms + 10000;
                 last_input = now_ms;
-                if (!screen_on) {
-                    plat_backlight(true);
-                    screen_on = true;
-                }
+                screen_wake(&app);
             }
             free(f);
             free(body);
@@ -461,39 +545,46 @@ int main(int argc, char **argv) {
             rate_roll(&app);
             pet_roll_day(&app.pet, app_now(&app), app.tz_offset);
             last_tick = now_ms;
-            if (app_now(&app) - app.last_save >= SAVE_EVERY_S) {
-                pet_save(&app.pet, app.pet_path);
-                app.last_save = app_now(&app);
+            if (last_unlock < 0 || now_ms - last_unlock >= UNLOCK_CHECK_MS) {
+                uint64_t ids = pet_check_unlocks(&app.pet, app_now(&app), app.tz_offset);
+                announce_unlocks(&app, ids, true, last_unlock < 0, now_ms);
+                last_unlock = now_ms;
             }
+            bool due = g_save_now || app_now(&app) - app.last_save >= SAVE_EVERY_S;
+            if (due && pet_save_needed(&app.pet, &app.saved_pet)) save_pet(&app);
+            g_save_now = false;
         }
         if (now_ms - last_battery >= 30000) {
             app.battery = plat_battery();
             last_battery = now_ms;
         }
-        if (now_ms - last_charge >= CHARGE_POLL_MS) {
+        if (now_ms - last_power >= POWER_POLL_MS) {
             bool was = app.charging;
-            app.charging = app.cfg.awake_on_power && plat_charging();
-            last_charge = now_ms;
+            on_power = plat_on_power();
+            app.charging = app.cfg.awake_on_power && on_power;
+            last_power = now_ms;
+            if (app.charging != was) plat_stay_awake(app.charging);
             if (app.charging && !was) {
                 last_input = now_ms;
-                if (!screen_on) {
-                    plat_backlight(true);
-                    screen_on = true;
-                }
+                screen_wake(&app);
             }
             dirty |= app.charging != was;
         }
+        if (now_ms - last_night >= 1000) { /* also catches the first clock sync after launch */
+            bool was_dim = app.night_dim;
+            night_update(&app, on_power);
+            last_night = now_ms;
+            dirty |= app.night_dim != was_dim;
+        }
         for (Button b; (b = plat_poll()) != PAD_NONE;) {
             last_input = now_ms;
-            if (!screen_on) { /* the waking press is swallowed */
-                plat_backlight(true);
-                screen_on = true;
+            if (!g_screen_on) { /* the waking press is swallowed */
+                screen_wake(&app);
                 dirty = true;
                 continue;
             }
             if (b == PAD_SELECT) {
-                plat_backlight(false);
-                screen_on = false;
+                screen_sleep();
                 continue;
             }
             if (!handle(&app, b, now_ms)) g_running = 0;
@@ -502,23 +593,22 @@ int main(int argc, char **argv) {
         rumble_update(now_ms);
         scene_update(scene, &app, now_ms);
         bool idle_timeout = app.cfg.screen_timeout_s > 0 && now_ms - last_input > app.cfg.screen_timeout_s * 1000LL;
-        if (screen_on && !app.charging && idle_timeout) {
-            plat_backlight(false);
-            screen_on = false;
-        }
-        int frame_ms = app.screen == SCREEN_DEN ? 33 : 66;
-        if (screen_on && (dirty || now_ms - last_render >= frame_ms)) {
+        if (g_screen_on && !app.charging && idle_timeout) screen_sleep();
+        int frame_ms = app.night_dim ? NIGHT_FRAME_MS : app.screen == SCREEN_DEN ? 33 : 66;
+        if (g_screen_on && (dirty || now_ms - last_render >= frame_ms)) {
             ui_draw(&app, scene, &canvas, now_ms);
             plat_present(canvas.px);
             last_render = now_ms;
         }
-        usleep(screen_on ? 10000 : 50000);
+        usleep(g_screen_on && !app.night_dim ? 10000 : 50000);
     }
-    if (app.pet_ready) pet_save(&app.pet, app.pet_path);
+    if (app.pet_ready && pet_save_needed(&app.pet, &app.saved_pet)) save_pet(&app);
     scene_destroy(scene);
     audio_shutdown();
     plat_rumble(false);
     plat_backlight(true);
+    night_update(&app, false); /* back to the user's own brightness */
+    if (app.charging) plat_stay_awake(false);
     plat_shutdown();
     return 0;
 }

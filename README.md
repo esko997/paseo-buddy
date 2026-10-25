@@ -21,13 +21,17 @@ bridge/install.sh     # npm install, systemd user service on :6780, prints the p
 ```
 
 - The token lives in `~/.config/paseo-pager/token`.
-- The feed ledger lives in `~/.config/paseo-pager/ledger.json`. It holds the monotonic per-model-family
-  output-token totals that the pet eats. Token history from before the bridge was installed is not counted.
+- The feed ledger lives in `~/.config/paseo-pager/ledger.json`. It holds:
+  - the monotonic per-model-family output-token totals that the pet eats, and
+  - today's output tokens and estimated cost (bridge-local day) for the den's ATM.
+
+  History from before the bridge was installed (or before it tracked cost) is not counted.
 - Environment overrides: `PAGER_LISTEN`, `PAGER_DAEMON_URL`, `PAGER_TOKEN`, `PASEO_PASSWORD`, `PAGER_CONFIG_DIR`.
 - Endpoints:
   - `GET /healthz`
   - `GET /pager?token=…&rev=<last rev>&wait=<s>` returns a tab-separated `PAGER 1` document.
     `miyoo/src/feed.c` parses it. The request waits until something changes or `wait` expires.
+    Devices ignore lines they don't know, so a newer bridge works with an older pager.
 - If a firewall is on, allow the port from your LAN:
   - ufw (Pop!_OS, Ubuntu): `sudo ufw allow from 192.168.1.0/24 to any port 6780 proto tcp`
   - firewalld (Bazzite, Fedora): `sudo firewall-cmd --permanent --add-port=6780/tcp && sudo firewall-cmd --reload`
@@ -37,7 +41,7 @@ bridge/install.sh     # npm install, systemd user service on :6780, prints the p
 
 ```sh
 cd miyoo
-./build-miyoo.sh      # cross-compiles in a cached ubuntu:24.04 podman image -> build/PaseoPager/
+./build-miyoo.sh      # cross-compiles in a cached Debian buster (glibc 2.28) podman image -> build/PaseoPager/
 ```
 
 1. Copy `build/PaseoPager` to `/mnt/SDCARD/App/` on the SD card. If SSH is on (Apps → Tweaks → Network),
@@ -48,10 +52,15 @@ cd miyoo
 3. Turn on Wi-Fi in Onion and launch **Paseo Pager** from Apps.
 
 There are three screens. Use L/R to cycle between them:
-- **Agents**: a list of your agents, with the pet and a token-rate chart at the top.
+- **Agents**: a list of your agents, each with a small context-window fill bar, and the pet and a token-rate
+  chart at the top.
 - **Den**: a pixel-art room. Each agent is a little worker at a desk, the pet wanders the floor, and
   token crumbs fly to the pet as agents produce output.
-- **Pet**: the pet's stats and diet.
+  - An ATM in the corner shows today's tokens and estimated cost across all bridges. Big chunks of tokens
+    print a receipt, which the pet tears off.
+  - Workers start sweating when their context window passes 80%. Past 95% a warning sign appears on the desk.
+  - The cost is Paseo's estimate at API prices (`~$`), not what a subscription actually bills.
+- **Pet**: the pet's stats and diet. Y opens the wardrobe.
 
 Controls:
 
@@ -60,7 +69,8 @@ Controls:
 | D-pad | Select an agent (in the Den and Pet screens, Left/Right switch screens) |
 | A | Agent details |
 | B | Back |
-| X / Y | Pat the pet |
+| X | Pat the pet |
+| Y | Wardrobe (on the Pet screen) |
 | L / R | Cycle Agents → Den → Pet |
 | START | Clear alerts |
 | SELECT | Screen off |
@@ -86,6 +96,28 @@ Cues are short and rate-limited. They are silent from 23:00 to 07:00 bridge time
 The first snapshot after launch never buzzes or chimes. Onion's power-button sleep freezes the app and
 drops Wi-Fi. The pager reconnects on wake, but it only pages you while it is awake.
 
+### Always on
+
+The pager is built to sit on a desk plugged in. While on USB power (`awake_on_power = 1`):
+- The screen stays on.
+- The pager sets Onion's `/tmp/stay_awake` flag, so Onion won't idle-sleep. A power-button press then only
+  turns the screen off; the pager keeps running and paging.
+- From 23:00 to 07:00 (bridge time) the screen dims to `night_dim` (an Onion brightness level, default 1;
+  `-1` turns this off) and the UI drops to about 5 frames a second. Your Onion brightness comes back in the
+  morning and when the app exits. `launch.sh` also restores it after a crash.
+- `battery_care = 1` (the default) sets the Mini Plus's charge controller (AXP223, REG 0x33) to stop at
+  4.1 V instead of 4.2 V, about 85–90% full. That's much easier on a battery that never unplugs.
+  - It's applied every time the pager starts.
+  - `battery_care = 0` puts back 4.2 V.
+  - Onion's battery percentage will top out below 100%.
+- Nothing stays still for long, to avoid image retention on the LCD:
+  - the whole UI drifts by a pixel or two every few minutes;
+  - the title animates now and then;
+  - the den has ambient events: a bird or cat at the window, the pet tidying up, sunlight moving across
+    the floor.
+
+On battery, Onion's own sleep timer applies as usual.
+
 ### The pet
 
 The pet asks nothing of you. There is no hunger, no decay, and no sickness, and ignoring it costs nothing.
@@ -105,8 +137,18 @@ The Pet screen shows:
 
 These are stats, not goals.
 
-The pet's state is saved to `pet.txt` next to the binary. Its clock is the bridge's, because the
-Miyoo's own clock can't be trusted.
+**Wardrobe.** The pet earns 22 cosmetics from milestones, and keeps them forever:
+- hats, glasses, scarves and held items;
+- den decor (a shelf ornament) and rug patterns;
+- a shiny coat.
+
+Milestones include tokens eaten, turns, days alive, its first adult form, being fed by all four model
+families, a late-night snack, and seasonal dates (Halloween week, December, New Year, its birthday).
+New items are put on automatically if that slot is empty. Locked ones show a silhouette and a hint.
+
+The pet's state is saved to `pet.txt` next to the binary, only when something changed (at most every
+5 minutes, right away for hatching, evolving or a new unlock, and on exit). Its clock is the bridge's,
+because the Miyoo's own clock can't be trusted.
 
 ### Development
 

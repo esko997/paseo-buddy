@@ -1,5 +1,5 @@
 #pragma once
-/* 16x16 pet pixel art. Included only by ui.c.
+/* 16x16 pet pixel art (cosmetics live in cosmetics.h). Included by pet_view.c and scene.c.
  * '.' transparent  o outline  b body  l highlight  d shade  E eye  m mouth  c cheek  a accent  w shell */
 
 typedef const char *Sprite[16];

@@ -36,6 +36,11 @@ typedef struct {
     int64_t fed[N_FAMILIES]; /* cumulative output tokens by model family */
     int64_t turns;
     int64_t errors;
+    /* `today` line (zero from older bridges): the bridge-local day number, i.e.
+     * floor((now + tz_offset) / 86400), and that day's output tokens and cost across all agents. */
+    int64_t today_day;
+    int64_t today_tokens;
+    int64_t today_cost_mc; /* millicents (1/1000 of a cent) */
     int n_agents;
     Agent agents[MAX_AGENTS];
 } Feed;

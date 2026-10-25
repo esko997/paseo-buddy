@@ -30,6 +30,8 @@ typedef struct {
     bool awake_on_power;  /* keep the screen on while charging */
     int volume;           /* 0..10 sound cues; 0 = silent */
     bool quiet_nights;    /* no sound 23:00-07:00 bridge time */
+    int night_dim;        /* backlight level 0..10 for 23:00-07:00 while on power; -1 = off */
+    bool battery_care;    /* charge to 4.1 V instead of 4.2 V (Mini Plus) */
 } Config;
 
 /* Loads key = value config. Returns false with a message in err on failure. */

@@ -64,6 +64,10 @@ bool feed_parse(const char *body, Feed *out) {
             for (int i = 0; i < N_FAMILIES; i++) out->fed[i] = atoll(f[1 + i]);
             out->turns = atoll(f[5]);
             out->errors = atoll(f[6]);
+        } else if (!strcmp(f[0], "today") && n >= 4) {
+            out->today_day = atoll(f[1]);
+            out->today_tokens = atoll(f[2]);
+            out->today_cost_mc = atoll(f[3]);
         } else if (!strcmp(f[0], "agent") && n >= 13 && out->n_agents < MAX_AGENTS) {
             Agent *a = &out->agents[out->n_agents++];
             copy(a->id, sizeof a->id, f[1]);

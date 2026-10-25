@@ -1,7 +1,10 @@
 /* The den: a cozy pixel-art room where every visible agent is a little robot at a desk and the
- * pet wanders the rug eating the token crumbs they produce. Everything is gfx_rect/gfx_text
- * level drawing; animation state lives in a fixed particle pool, positions are analytic in age so
- * drawing never mutates the scene. */
+ * pet wanders the rug eating the token crumbs they produce. An ATM in the corner shows today's
+ * tokens and estimated cost. Everything is gfx_rect/gfx_text level drawing; animation state lives
+ * in a fixed particle pool, positions are analytic in age so drawing never mutates the scene.
+ * The den is on screen for hours on a desk, so something small always moves: ambient events every
+ * few minutes (a bird or cat at the window, the pet tidying, a robot stretching) and a sunlight
+ * patch that drifts with the time of day. With app->night_dim everything gets calmer and sparser. */
 #include "scene.h"
 #include "pet_view.h"
 
@@ -9,23 +12,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "theme.h"
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #include "sprites.h"
 #pragma GCC diagnostic pop
 
-#define TEXT 0xe8e8ec
-#define DIM 0x8a90a0
-#define ALERT_COL 0xff6b4a
 #define WHITE 0xf4f4f8
 #define GOLD 0xffd166
 
-static const uint32_t BUCKET_COL[] = {0xff6b4a, 0xe5484d, 0x46c06f, 0xf5c542, 0x5b6170};
-
 /* ---- layout ------------------------------------------------------------------------------ */
 
-#define DEN_Y 40
-#define DEN_B 452
+#define DEN_Y HEADER_H
+#define DEN_B FOOTER_Y
 #define WALL_B 160
 #define DESK_D0 190   /* desk-top y of the first of two rows */
 #define DESK_SOLO 236 /* desk-top y when one row is enough */
@@ -36,15 +36,34 @@ static const uint32_t BUCKET_COL[] = {0xff6b4a, 0xe5484d, 0x46c06f, 0xf5c542, 0x
 #define WS 3 /* worker sprite scale */
 #define PET_S 5
 #define PET_Y 371
-#define PET_MIN_X 56
+#define PET_MIN_X 106 /* stays on the rug, clear of the plant and ATM (unless on an errand) */
 #define PET_MAX_X 464
 #define BED_X 548
 #define NEST_X 280
+#define PLANT_X 72 /* pot left edge; tidying nudges it by Scene.plant_dx */
+
+/* ATM in the left floor corner; the receipt hangs from its slot until the pet tears it off. */
+#define ATM_X 6
+#define ATM_Y 372
+#define ATM_W 62
+#define ATM_H 78
+#define ATM_CYCLE_MS 4000      /* screen alternates today's tokens / estimated cost */
+#define RECEIPT_MIN 5000       /* EV_TOKENS chunk that prints a receipt */
+#define RECEIPT_GAP_MS 300000  /* at most one receipt per 5 minutes */
+#define RECEIPT_PRINT_MS 1440  /* 16 px, one per 90 ms */
+#define RECEIPT_KEEP_MS 45000  /* nobody came for it: it drops on its own */
+#define TEAR_X (ATM_X + 50)    /* pet_x when standing at the receipt */
+#define TEAR_WAIT_MS 500
+
+/* Ambient events: at most one per AMBIENT_MS slot, at a hashed offset (every other slot when calm). */
+#define AMBIENT_MS 150000
+#define TIDY_MS 1800
+#define UNLOCK_TAG_MS 4500
 
 #define MAX_PARTICLES 192
 #define STALE_MS 4000
 
-typedef enum { P_CRUMB, P_CONFETTI, P_SHELL, P_SPARK, P_SPARKLE, P_HEART, P_RING, P_BIT } PKind;
+typedef enum { P_CRUMB, P_CONFETTI, P_SHELL, P_SPARK, P_SPARKLE, P_HEART, P_RING, P_BIT, P_PAPER } PKind;
 
 typedef struct {
     int64_t born;
@@ -71,6 +90,20 @@ struct Scene {
     int64_t flash_at;
     char banner[16];
     int64_t banner_at;
+
+    int unlock_id;
+    int64_t unlock_at;
+
+    int64_t receipt_at;   /* print start; 0 = no receipt */
+    int64_t last_receipt; /* rate limit */
+    int64_t arrive_ms;    /* pet reached its receipt/tidy spot (0 = still walking) */
+    int64_t tidy_slot;    /* last ambient slot the pet considered for tidying */
+    int tidy_kind;        /* AmbKind of the tidy in progress, 0 = none */
+    float tidy_x;
+    int plant_dx;
+    int64_t plant_wiggle_at;
+    int64_t ripple_at;
+    int ripple_x;
 };
 
 /* ---- small helpers ----------------------------------------------------------------------- */
@@ -125,14 +158,6 @@ static uint32_t isqrt64(uint64_t v) {
         bit >>= 2;
     }
     return (uint32_t)r;
-}
-
-static uint32_t lerp_col(uint32_t a, uint32_t b, int t /* 0..256 */) {
-    if (t <= 0) return a;
-    if (t >= 256) return b;
-    int ar = a >> 16 & 255, ag = a >> 8 & 255, ab = a & 255;
-    int br = b >> 16 & 255, bg = b >> 8 & 255, bb = b & 255;
-    return RGB(ar + (br - ar) * t / 256, ag + (bg - ag) * t / 256, ab + (bb - ab) * t / 256);
 }
 
 /* Rect clipped to the den band so effects never spill into ui.c's header/footer. */
@@ -213,6 +238,40 @@ static int find_desk(const App *app, int bridge, const char *id) {
 
 static int pet_y_at(float x) { return x >= BED_X - 4 ? PET_Y - 6 : PET_Y; }
 
+/* ---- ambient schedule -------------------------------------------------------------------- */
+
+typedef enum { AMB_NONE, AMB_CRITTER, AMB_STRETCH, AMB_TIDY_PLANT, AMB_TIDY_RUG } AmbKind;
+
+typedef struct {
+    AmbKind kind;
+    int64_t slot, t0, age; /* age = now - t0 */
+    uint32_t h;
+} Ambient;
+
+#define CRITTER_MS 9000
+#define STRETCH_MS 2400
+#define TIDY_START_MS 20000 /* the pet must be free within this long after t0, or it skips the chore */
+
+/* The slot's event (kind may be AMB_NONE for a skipped slot); purely a function of time. */
+static Ambient ambient_slot(int64_t now, bool calm) {
+    Ambient a;
+    a.slot = now / AMBIENT_MS;
+    a.h = hash_u((uint32_t)a.slot * 2654435761u + 0x51edu);
+    a.t0 = a.slot * AMBIENT_MS + 15000 + (int64_t)(a.h % 90000);
+    a.age = now - a.t0;
+    if (calm) a.kind = (a.slot & 1) ? AMB_NONE : (a.h >> 20) & 1 ? AMB_CRITTER : AMB_STRETCH;
+    else a.kind = (AmbKind)(AMB_CRITTER + (a.h >> 20) % 4);
+    return a;
+}
+
+/* The event currently playing out for drawing (tidying is driven by scene_update instead). */
+static Ambient ambient_now(int64_t now, bool calm) {
+    Ambient a = ambient_slot(now, calm);
+    int len = a.kind == AMB_CRITTER ? CRITTER_MS : a.kind == AMB_STRETCH ? STRETCH_MS : 0;
+    if (a.age < 0 || a.age >= len) a.kind = AMB_NONE;
+    return a;
+}
+
 /* ---- particles --------------------------------------------------------------------------- */
 
 static Particle *spawn(Scene *s, PKind kind, int64_t born, int life) {
@@ -288,6 +347,12 @@ static void handle_event(Scene *s, const App *app, const Event *e, int64_t now) 
             if (born + p->life > last) last = born + p->life;
         }
         if (last + 300 > s->hold_until) s->hold_until = last + 300;
+        /* A big chunk prints an ATM receipt (rarely; never at night). */
+        if (e->amount >= RECEIPT_MIN && !app->night_dim && !s->receipt_at &&
+            (!s->last_receipt || now - s->last_receipt >= RECEIPT_GAP_MS)) {
+            s->receipt_at = now;
+            s->last_receipt = now;
+        }
         break;
     }
     case EV_FINISHED:
@@ -339,6 +404,22 @@ static void handle_event(Scene *s, const App *app, const Event *e, int64_t now) 
             p->vy = (float)rrange(s, 38, 56); /* rise speed */
         }
         break;
+    case EV_UNLOCKED: {
+        s->unlock_id = (int)e->amount;
+        s->unlock_at = now;
+        const Palette *pal = pet_pal(&app->pet);
+        uint32_t cols[4] = {0xffffff, GOLD, pal->accent, 0xff9fd0};
+        for (int i = 0; i < 22; i++) {
+            Particle *p = spawn(s, P_SPARKLE, now + rrange(s, 0, 400), 800 + rrange(s, 0, 500));
+            int a = rrange(s, 0, 63), r = rrange(s, 34, 96);
+            p->x = pcx;
+            p->y = pcy - 10;
+            p->vx = (float)(isin(a + 16) * r / 64);
+            p->vy = (float)(isin(a) * r / 64) * 0.8f;
+            p->color = cols[i % 4];
+        }
+        break;
+    }
     }
 }
 
@@ -351,6 +432,30 @@ Scene *scene_create(void) {
 }
 
 void scene_destroy(Scene *s) { free(s); }
+
+/* The receipt leaves the ATM: torn off by the pet, or it just drops after a while. */
+static void receipt_off(Scene *s, int64_t now, bool torn) {
+    Particle *p = spawn(s, P_PAPER, now, torn ? 1500 : 1100);
+    p->x = (float)(ATM_X + 39);
+    p->y = (float)(ATM_Y + 66);
+    p->vx = torn ? 46.f : 6.f;
+    p->vy = torn ? -110.f : 0.f;
+    p->g = torn ? 150.f : 90.f;
+    p->color = 0xf4f0e0;
+    if (torn) {
+        uint32_t cols[2] = {0xffffff, GOLD};
+        for (int i = 0; i < 6; i++) {
+            Particle *q = spawn(s, P_SPARKLE, now + rrange(s, 0, 160), 500 + rrange(s, 0, 200));
+            int a = rrange(s, 0, 63);
+            q->x = p->x;
+            q->y = p->y - 4;
+            q->vx = (float)(isin(a + 16) * 18 / 64);
+            q->vy = (float)(isin(a) * 14 / 64);
+            q->color = cols[i & 1];
+        }
+    }
+    s->receipt_at = 0;
+}
 
 static int first_urgent_desk(const App *app) {
     int n = desk_count(app);
@@ -390,7 +495,31 @@ void scene_update(Scene *s, const App *app, int64_t now_ms) {
     s->last_ms = now_ms;
     float goal, speed = 46.f;
     int urgent = first_urgent_desk(app);
-    if (app->pet.stage == STAGE_EGG) {
+    bool egg = app->pet.stage == STAGE_EGG;
+    bool busy = egg || sleepy || now_ms < s->hold_until || urgent >= 0;
+
+    /* The receipt waits for the pet once printed; if nobody comes it drops on its own. */
+    bool receipt_ready = s->receipt_at && now_ms >= s->receipt_at + RECEIPT_PRINT_MS;
+    if (receipt_ready && now_ms - s->receipt_at >= RECEIPT_PRINT_MS + RECEIPT_KEEP_MS) {
+        receipt_off(s, now_ms, false);
+        receipt_ready = false;
+    }
+    /* Tidying chores start with their ambient slot, only if the pet is free soon after. */
+    Ambient amb = ambient_slot(now_ms, app->night_dim);
+    if (busy) s->tidy_kind = AMB_NONE;
+    if ((amb.kind == AMB_TIDY_PLANT || amb.kind == AMB_TIDY_RUG) && amb.slot != s->tidy_slot && amb.age >= 0) {
+        if (amb.age > TIDY_START_MS) {
+            s->tidy_slot = amb.slot;
+        } else if (!busy && !receipt_ready) {
+            s->tidy_slot = amb.slot;
+            s->tidy_kind = amb.kind;
+            s->tidy_x = amb.kind == AMB_TIDY_PLANT ? (float)(PLANT_X + 16 + s->plant_dx)
+                                                   : (float)(PET_MIN_X + 40 + (int)(amb.h % 280));
+        }
+    }
+
+    bool special = false;
+    if (egg) {
         goal = NEST_X;
     } else if (sleepy) {
         goal = BED_X;
@@ -401,8 +530,17 @@ void scene_update(Scene *s, const App *app, int64_t now_ms) {
         int sx, d;
         desk_pos(urgent, desk_count(app), &sx, &d);
         goal = (float)(sx + 80 - 8 * PET_S);
+        if (goal < PET_MIN_X) goal = PET_MIN_X;
+        if (goal > PET_MAX_X) goal = PET_MAX_X;
         speed = 95.f;
         s->resting = false;
+    } else if (receipt_ready) {
+        goal = TEAR_X;
+        speed = 70.f;
+        special = true;
+    } else if (s->tidy_kind) {
+        goal = s->tidy_x;
+        special = true;
     } else {
         if (s->wander_x > PET_MAX_X) s->wander_x = PET_MAX_X; /* coming back from bed */
         float dist = s->wander_x - s->pet_x;
@@ -420,11 +558,49 @@ void scene_update(Scene *s, const App *app, int64_t now_ms) {
         }
         goal = s->wander_x;
     }
-    if (goal < PET_MIN_X && goal != NEST_X) goal = PET_MIN_X;
-    if (goal > PET_MAX_X && goal != BED_X) goal = PET_MAX_X;
     float step = speed * dt, dx = goal - s->pet_x;
     if (dx <= step && dx >= -step) s->pet_x = goal;
     else s->pet_x += dx > 0 ? step : -step;
+
+    if (special && s->pet_x == goal) {
+        if (!s->arrive_ms) {
+            s->arrive_ms = now_ms;
+            if (!receipt_ready && s->tidy_kind == AMB_TIDY_PLANT) {
+                s->plant_wiggle_at = now_ms;
+                static const uint32_t LEAVES[2] = {0x4caf50, 0x388e3c};
+                burst(s, P_BIT, 3, (float)(PLANT_X + 16 + s->plant_dx), 384.f, now_ms, 900, 30, -60, -20, 160.f,
+                      LEAVES, 2);
+            } else if (!receipt_ready && s->tidy_kind == AMB_TIDY_RUG) {
+                s->ripple_at = now_ms;
+                s->ripple_x = (int)goal + 8 * PET_S;
+                static const uint32_t DUST[2] = {0xfff3b0, 0xffffff};
+                for (int k = 0; k < 4; k++) {
+                    Particle *p = spawn(s, P_SPARKLE, now_ms + 300 + k * 260, 520);
+                    p->x = (float)(s->ripple_x + rrange(s, -50, 50));
+                    p->y = (float)rrange(s, 392, 436);
+                    p->vy = -6.f;
+                    p->color = DUST[k & 1];
+                }
+            }
+        }
+        int64_t there = now_ms - s->arrive_ms;
+        if (receipt_ready && there >= TEAR_WAIT_MS) {
+            receipt_off(s, now_ms, true);
+            s->hold_until = now_ms + 600; /* admire it for a moment */
+            s->arrive_ms = 0;
+        } else if (!receipt_ready && there >= TIDY_MS) {
+            if (s->tidy_kind == AMB_TIDY_PLANT) {
+                int nd;
+                do nd = rrange(s, -3, 3);
+                while (nd == s->plant_dx);
+                s->plant_dx = nd;
+            }
+            s->tidy_kind = AMB_NONE;
+            s->arrive_ms = 0;
+        }
+    } else {
+        s->arrive_ms = 0;
+    }
 
     /* Retire particles; arriving crumbs make the pet chomp. */
     float mx, my;
@@ -449,11 +625,14 @@ void scene_update(Scene *s, const App *app, int64_t now_ms) {
 
 /* ---- time of day ------------------------------------------------------------------------- */
 
+/* Per-frame drawing context: lighting plus the calm flag and the ambient event playing now. */
 typedef struct {
     int minute;
     int day; /* 0 night .. 256 full daylight */
     uint32_t sky_top, sky_bot;
     uint32_t wall, wall_hi, trim, floor, plank, shadow, rug, rug_edge;
+    bool calm; /* app->night_dim: slower, sparser effects (the app draws at ~5 fps) */
+    Ambient amb;
 } Light;
 
 static const struct {
@@ -467,7 +646,7 @@ static const struct {
     {1290, 0x060a20, 0x121838, 0},    {1440, 0x060a20, 0x121838, 0},
 };
 
-static Light light_for(const App *app) {
+static Light light_for(const App *app, int64_t now_ms) {
     Light L;
     int64_t local = app_now(app) + (app->clock_synced ? app->tz_offset : 0);
     int m = (int)(((local % 86400) + 86400) % 86400 / 60);
@@ -487,6 +666,8 @@ static Light light_for(const App *app) {
     L.shadow = lerp_col(0x1a1310, 0x2c1f18, L.day);
     L.rug = lerp_col(0x34213a, 0x553457, L.day);
     L.rug_edge = lerp_col(0x4a2e44, 0x7a4a6e, L.day);
+    L.calm = app->night_dim;
+    L.amb = ambient_now(now_ms, L.calm);
     return L;
 }
 
@@ -533,7 +714,7 @@ static void draw_window(Canvas *c, const Light *L, int64_t now) {
                 RC(c, &k, x, y + 2, 1, 2, 0xd8dcff);
             }
         }
-        int64_t st = now % 19000;
+        int64_t st = L->calm ? 19000 : now % 19000; /* no shooting stars when calm */
         if (st < 650) {
             int hx = k.x0 + 30 + (int)(st * 140 / 650), hy = k.y0 + 8 + (int)(st * 30 / 650);
             for (int j = 0; j < 6; j++)
@@ -571,6 +752,50 @@ static void draw_window(Canvas *c, const Light *L, int64_t now) {
             RC(c, &k, x, y + 5, 34, 8, cc);
             RC(c, &k, x + 6, y, 14, 7, cc);
             RC(c, &k, x + 17, y + 2, 11, 5, cc);
+        }
+    }
+    /* ambient critter: a bird by day, a cat strolling the outside ledge by night */
+    if (L->amb.kind == AMB_CRITTER) {
+        int age = (int)L->amb.age;
+        if (L->day >= 128) {
+            static const uint8_t BIRD[2][3] = {{0x82, 0x44, 0x38}, {0x38, 0x44, 0x82}};
+            if (age < 5500) {
+                const uint8_t *f = BIRD[(age / (L->calm ? 400 : 140)) % 2];
+                int x = k.x0 - 16 + age * (iw + 32) / 5500;
+                int y = k.y0 + 12 + (int)(L->amb.h % 24) - age * 10 / 5500 + isin(age / 50) * 3 / 64;
+                uint32_t col = lerp_col(L->sky_top, 0x1a1d26, 210);
+                for (int r = 0; r < 3; r++)
+                    for (int b = 0; b < 7; b++)
+                        if (f[r] & (0x80 >> b)) RC(c, &k, x + b * 2, y + r * 2, 2, 2, col);
+            }
+        } else {
+            int xm = k.x0 + iw * 3 / 4 - 8, by = k.y1, x; /* sits mid right pane */
+            bool sit = false;
+            if (age < 3500) x = k.x1 + 4 + (xm - k.x1 - 4) * age / 3500;
+            else if (age < 5500) x = xm, sit = true;
+            else x = xm + (k.x0 - 34 - xm) * (age - 5500) / 3500;
+            uint32_t col = lerp_col(L->sky_bot, 0x000000, 180);
+            bool blink = (age / 1700) % 5 == 2;
+            int hy = sit ? by - 18 : by - 14;
+            RC(c, &k, x + 1, hy - 2, 2, 3, col);
+            RC(c, &k, x + 6, hy - 2, 2, 3, col);
+            RC(c, &k, x, hy, 9, 7, col);
+            if (!blink) {
+                RC(c, &k, x + 2, hy + 3, 1, 1, 0xd8f070);
+                RC(c, &k, x + 5, hy + 3, 1, 1, 0xd8f070);
+            }
+            if (sit) {
+                RC(c, &k, x + 3, by - 12, 11, 12, col);
+                RC(c, &k, x + 12, by - 3, 8, 2, col);
+                RC(c, &k, x + 19, by - 5 + (age / 500) % 2, 2, 3, col);
+            } else {
+                int f = (age / (L->calm ? 400 : 200)) % 2;
+                RC(c, &k, x + 6, by - 10, 16, 6, col);
+                RC(c, &k, x + 7 + f, by - 4, 2, 4, col);
+                RC(c, &k, x + 18 - f, by - 4, 2, 4, col);
+                RC(c, &k, x + 21, by - 16, 2, 7, col);
+                RC(c, &k, x + 22, by - 18, 2, 3, col);
+            }
         }
     }
     /* mullions + sill */
@@ -618,19 +843,58 @@ static void draw_hud(Canvas *c, const App *app, int64_t now) {
 }
 
 static void draw_rate_panel(Canvas *c, const App *app, int64_t now) {
-    int x = 444, y = 46, w = 184, h = 104;
+    int x = 444, y = 46, w = 140, h = 104; /* x 590..634 is the unlockable wall-decor spot */
     R(c, x, y, w, h, 0x2a3040);
     R(c, x + 2, y + 2, w - 4, h - 4, 0x12151d);
-    gfx_text(c, FONT_BODY, x + 8, y + 4, DIM, "tok/min", 0);
     int64_t lag = app_now(app) / 60 - app->rate_minute;
     char cur[16];
     format_tokens(lag == 0 ? app->rate[RATE_MINUTES - 1] : 0, cur, sizeof cur);
     int cw = (int)strlen(cur) * gfx_font_w(FONT_BODY);
+    if (cw <= w - 16 - 74) gfx_text(c, FONT_BODY, x + 8, y + 4, DIM, "tok/min", 0);
     gfx_text(c, FONT_BODY, x + w - 8 - cw, y + 4, TEXT, cur, 0);
     scene_draw_sparkline(c, app, x + 8, y + 28, w - 16, h - 36, now);
 }
 
-static void draw_room(Canvas *c, const Light *L, const App *app, int64_t now) {
+/* Window light on the floor: the panes projected as a parallelogram that slides with the sun
+ * (morning light falls to the right, evening to the left) and a faint one under the moon. Only
+ * bare floor/plank pixels are recoloured, so it is cheap and sits under everything. */
+static void draw_window_light(Canvas *c, const Light *L) {
+    int m = L->minute, u, strength;
+    uint32_t tint;
+    if (m >= 380 && m < 1150 && L->day > 110) {
+        u = (m - 360) * 256 / 810;
+        strength = (L->day - 110) * 64 / 146; /* up to 25% toward warm light */
+        tint = 0xe8b878;
+    } else if ((m >= 1200 || m < 330) && L->day < 40) {
+        u = ((m - 1170 + 1440) % 1440) * 256 / 630;
+        strength = 30;
+        tint = 0x8090c8;
+    } else {
+        return;
+    }
+    uint32_t f0 = L->floor, f1 = lerp_col(f0, tint, strength);
+    uint32_t p0 = L->plank, p1 = lerp_col(p0, tint, strength);
+    const int top = WALL_B + 4, hgt = 84;
+    int shift = (128 - u) * 150 / 128;
+    for (int r = 0; r < hgt; r++) {
+        if (r >= 40 && r < 44) continue; /* transom shadow */
+        int w = WIN_W - 16 + r * 36 / hgt;
+        int x0 = WIN_X + 8 - r * 18 / hgt + shift * r / hgt;
+        int mid = x0 + w / 2;
+        uint32_t *row = c->px + (top + r) * SCREEN_W;
+        for (int pane = 0; pane < 2; pane++) {
+            int a = pane ? mid + 3 : x0, b = pane ? x0 + w : mid - 3;
+            if (a < 0) a = 0;
+            if (b > SCREEN_W) b = SCREEN_W;
+            for (int x = a; x < b; x++) {
+                if (row[x] == f0) row[x] = f1;
+                else if (row[x] == p0) row[x] = p1;
+            }
+        }
+    }
+}
+
+static void draw_room(Canvas *c, const Light *L, const Scene *s, const App *app, int64_t now) {
     R(c, 0, DEN_Y, SCREEN_W, WALL_B - DEN_Y, L->wall);
     for (int x = 20; x < SCREEN_W; x += 40) R(c, x, DEN_Y, 2, WALL_B - DEN_Y - 8, L->wall_hi);
     R(c, 0, WALL_B - 8, SCREEN_W, 8, L->trim);
@@ -644,6 +908,7 @@ static void draw_room(Canvas *c, const Light *L, const App *app, int64_t now) {
         R(c, 0, y, SCREEN_W, 2, L->plank);
         for (int sx = (k * 97) % 160; sx < SCREEN_W; sx += 160) R(c, sx, y - 18, 2, 18, L->plank);
     }
+    draw_window_light(c, L);
     /* rug */
     int rx = 104, ry = 382, rw = 432, rh = 66;
     R(c, rx + 6, ry, rw - 12, rh, L->rug_edge);
@@ -661,18 +926,135 @@ static void draw_room(Canvas *c, const Light *L, const App *app, int64_t now) {
     R(c, BED_X + 4, 421, 76, 2, cush);
     R(c, BED_X + 6, 428, 72, 12, cush);
     R(c, BED_X - 2, 447, 88, 3, L->shadow);
-    /* plant */
-    int sway = isin((int)(now / 90)) / 32;
-    R(c, 14, 420, 28, 26, 0xa4553a);
-    R(c, 12, 416, 32, 6, 0xc06a4a);
-    R(c, 14, 444, 28, 3, L->shadow);
+    /* plant (the pet nudges it around when tidying; it wiggles while being fussed with) */
+    int px = PLANT_X - 12 + (s ? s->plant_dx : 0);
+    int64_t wa = s ? now - s->plant_wiggle_at : -1;
+    bool wiggle = s && s->plant_wiggle_at && wa >= 0 && wa < TIDY_MS;
+    int sway = wiggle ? isin((int)(now / 30)) / 16 : isin((int)(now / (L->calm ? 270 : 90))) / 32;
+    R(c, px + 14, 420, 28, 26, 0xa4553a);
+    R(c, px + 12, 416, 32, 6, 0xc06a4a);
+    R(c, px + 14, 444, 28, 3, L->shadow);
     uint32_t leaf = lerp_col(0x2e6a3a, 0x4caf50, L->day), leaf2 = lerp_col(0x24502c, 0x388e3c, L->day);
-    R(c, 26, 384, 4, 32, leaf2);
-    R(c, 14 + sway, 388, 12, 6, leaf);
-    R(c, 30 + sway, 380, 14, 6, leaf);
-    R(c, 18 + sway, 400, 10, 5, leaf2);
-    R(c, 30 - sway, 396, 12, 5, leaf);
-    R(c, 24 + sway, 372, 8, 10, leaf);
+    R(c, px + 26, 384, 4, 32, leaf2);
+    R(c, px + 14 + sway, 388, 12, 6, leaf);
+    R(c, px + 30 + sway, 380, 14, 6, leaf);
+    R(c, px + 18 + sway, 400, 10, 5, leaf2);
+    R(c, px + 30 - sway, 396, 12, 5, leaf);
+    R(c, px + 24 + sway, 372, 8, 10, leaf);
+}
+
+/* The pet smoothing the rug: a fold runs out both ways across it (drawn over rug decor). */
+static void draw_rug_ripple(Canvas *c, const Scene *s, const Light *L, int64_t now) {
+    const int rx = 104, ry = 382, rw = 432, rh = 66;
+    int64_t ra = now - s->ripple_at;
+    if (!s->ripple_at || ra < 0 || ra >= 1600) return;
+    uint32_t fold = lerp_col(L->rug, 0xffffff, 40), shade = lerp_col(L->rug, 0x000000, 60);
+    uint32_t hi = lerp_col(L->rug_edge, 0xffffff, 60);
+    for (int dir = -1; dir <= 1; dir += 2) {
+        int bx = s->ripple_x + dir * (int)(ra * 18 / 100);
+        if (bx < rx + 14 || bx > rx + rw - 14) continue;
+        int lift = ra < 1100 ? 4 : 2;
+        R(c, bx - 3, ry + 4, 6, rh - 8, fold);
+        R(c, bx + 3 * dir - (dir < 0 ? 2 : 0), ry + 4, 2, rh - 8, shade);
+        R(c, bx - 8, ry - lift, 16, lift, L->rug_edge);
+        R(c, bx - 6, ry - lift, 12, 1, hi);
+        R(c, bx - 8, ry + rh, 16, lift - 1, L->rug_edge);
+    }
+}
+
+/* ---- ATM --------------------------------------------------------------------------------- */
+
+/* 3x5 pixel font for the ATM: rows are 3-bit (bit 2 = left); '.' is one column wide. */
+static const struct {
+    char ch;
+    uint8_t w;
+    uint8_t rows[5];
+} TINY[] = {
+    {'0', 3, {7, 5, 5, 5, 7}}, {'1', 3, {2, 6, 2, 2, 7}}, {'2', 3, {7, 1, 7, 4, 7}}, {'3', 3, {7, 1, 3, 1, 7}},
+    {'4', 3, {5, 5, 7, 1, 1}}, {'5', 3, {7, 4, 7, 1, 7}}, {'6', 3, {7, 4, 7, 5, 7}}, {'7', 3, {7, 1, 1, 2, 2}},
+    {'8', 3, {7, 5, 7, 5, 7}}, {'9', 3, {7, 5, 7, 1, 7}}, {'.', 1, {0, 0, 0, 0, 1}}, {'k', 3, {4, 5, 6, 5, 5}},
+    {'M', 3, {5, 7, 7, 5, 5}}, {'B', 3, {6, 5, 6, 5, 6}}, {'$', 3, {3, 6, 2, 3, 6}}, {'~', 3, {0, 6, 3, 0, 0}},
+    {'T', 3, {7, 2, 2, 2, 2}}, {'O', 3, {7, 5, 5, 5, 7}}, {'D', 3, {6, 5, 5, 5, 6}}, {'A', 3, {2, 5, 7, 5, 5}},
+    {'Y', 3, {5, 5, 2, 2, 2}}, {'K', 3, {5, 5, 6, 5, 5}}, {'E', 3, {7, 4, 6, 4, 7}}, {'N', 3, {6, 5, 5, 5, 5}},
+    {'S', 3, {3, 4, 2, 1, 6}}, {'C', 3, {7, 4, 4, 4, 7}}, {' ', 2, {0, 0, 0, 0, 0}},
+};
+
+/* Draws at scale sc, clipped to k; returns the advance width (gap after each glyph). */
+static int tiny_text(Canvas *c, const Clip *k, int x, int y, int sc, uint32_t col, const char *str) {
+    int x0 = x;
+    for (; *str; str++) {
+        int g = 0;
+        while (g < (int)(sizeof TINY / sizeof TINY[0]) && TINY[g].ch != *str) g++;
+        if (g == (int)(sizeof TINY / sizeof TINY[0])) continue;
+        int w = TINY[g].w;
+        for (int r = 0; r < 5; r++) {
+            uint8_t bits = TINY[g].rows[r];
+            for (int b = 0; b < w; b++)
+                if (bits & (1 << (w - 1 - b))) RC(c, k, x + b * sc, y + r * sc, sc, sc, col);
+        }
+        x += (w + 1) * sc;
+    }
+    return x - x0;
+}
+
+static void format_cost(int64_t mc, char *buf, size_t len) {
+    int64_t cents = (mc + 500) / 1000;
+    if (cents < 0) cents = 0;
+    if (cents < 10000) snprintf(buf, len, "~$%lld.%02lld", (long long)(cents / 100), (long long)(cents % 100));
+    else if (cents < 1000000) snprintf(buf, len, "~$%lld", (long long)(cents / 100));
+    else snprintf(buf, len, "~$%lldk", (long long)(cents / 100000));
+}
+
+static void draw_atm(Canvas *c, const Scene *s, const App *app, const Light *L, int64_t now) {
+    const int x = ATM_X, y = ATM_Y, w = ATM_W, h = ATM_H;
+    uint32_t body = lerp_col(0x24434c, 0x3c7684, L->day), side = lerp_col(0x1a3038, 0x2c5862, L->day);
+    uint32_t hi = lerp_col(0x2e5560, 0x5a9aa8, L->day);
+    R(c, x - 2, y + h - 2, w + 6, 3, L->shadow);
+    /* topper sign (lit, so it glows at night too) */
+    R(c, x + 2, y, w - 4, 17, COL_OUTLINE);
+    R(c, x + 4, y + 2, w - 8, 13, 0x2a2140);
+    const Clip all = {x, y, x + w, y + h};
+    tiny_text(c, &all, x + (w - 38) / 2, y + 4, 2, (now / 1200) % 7 == 0 && !L->calm ? 0xfff3b0 : GOLD, "TODAY");
+    /* cabinet */
+    R(c, x, y + 16, w, h - 16, COL_OUTLINE);
+    R(c, x + 1, y + 17, w - 2, h - 18, body);
+    R(c, x + w - 6, y + 17, 5, h - 18, side);
+    R(c, x + 1, y + 17, w - 2, 1, hi);
+    /* screen: today's tokens and estimated cost, alternating, values slide in */
+    R(c, x + 2, y + 19, w - 4, 26, 0x101218);
+    const Clip scr = {x + 3, y + 20, x + w - 3, y + 44};
+    RC(c, &scr, scr.x0, scr.y0, scr.x1 - scr.x0, scr.y1 - scr.y0, 0x0b1a14);
+    bool cost = (now / ATM_CYCLE_MS) % 2;
+    int64_t in = now % ATM_CYCLE_MS;
+    int slide = L->calm || in >= 240 ? 0 : (int)(240 - in) / 20;
+    char val[48]; /* roomy enough that gcc 8's -Wformat-truncation sees any int64 fits */
+    if (cost) format_cost(app->day_cost_mc, val, sizeof val);
+    else format_tokens(app->day_tokens, val, sizeof val);
+    uint32_t lcd = 0x7ee787;
+    int tw = tiny_text(c, &scr, scr.x0 + 2, scr.y0 + 3 + slide, 2, lcd, val);
+    if ((now / 500) % 2 && scr.x0 + 2 + tw + 2 <= scr.x1) RC(c, &scr, scr.x0 + 2 + tw, scr.y0 + 3 + slide, 2, 10, 0x3a8a50);
+    tiny_text(c, &scr, scr.x0 + 2, scr.y0 + 17 + slide, 1, 0x3a8a50, cost ? "EST COST" : "TOKENS");
+    /* keypad, card slot */
+    for (int r = 0; r < 2; r++)
+        for (int k = 0; k < 3; k++) R(c, x + 6 + k * 8, y + 48 + r * 6, 6, 4, k == 2 && r == 1 ? 0x46c06f : 0xc8ccd6);
+    R(c, x + 34, y + 50, 20, 3, 0x101218);
+    bool printing = s && s->receipt_at && now - s->receipt_at < RECEIPT_PRINT_MS;
+    R(c, x + 50, y + 55, 3, 2, printing && (now / 120) % 2 ? 0xffd166 : 0x2a6a40);
+    /* receipt slot + plinth */
+    R(c, x + 28, y + 60, 24, 3, 0x101218);
+    R(c, x + 1, y + 66, w - 2, h - 67, side);
+    R(c, x + 4, y + 69, w - 8, 2, body);
+    /* receipt, printed in jerks (one row per 90 ms), hangs until torn off */
+    if (s && s->receipt_at && now >= s->receipt_at) {
+        int len = (int)((now - s->receipt_at) / 90);
+        if (len > 16) len = 16;
+        int rx = x + 31, ry = y + 62;
+        R(c, rx, ry, 18, len, 0xf4f0e0);
+        uint32_t hsh = hash_u((uint32_t)s->receipt_at);
+        for (int k = 3; k < len - 1; k += 3) R(c, rx + 2, ry + k, 6 + (int)((hsh >> k) % 9), 1, 0xa8a090);
+        if (len >= 16)
+            for (int k = 0; k < 18; k += 4) R(c, rx + k, ry + 16, 2, 1, 0xf4f0e0); /* zigzag edge */
+    }
 }
 
 /* ---- workers ----------------------------------------------------------------------------- */
@@ -683,10 +1065,11 @@ static const char *WORKER[12] = {
 };
 
 typedef enum { EYE_OPEN, EYE_WIDE, EYE_CLOSED, EYE_HAPPY, EYE_X } Eyes;
-typedef enum { ARM_TYPE, ARM_REST, ARM_UP, ARM_WAVE } Arms;
+typedef enum { ARM_TYPE, ARM_REST, ARM_UP, ARM_WAVE, ARM_STRETCH } Arms;
 
 #define VISOR 0x14161f
 
+/* For ARM_STRETCH, `tick` is how far the arms are raised (px) instead of an animation clock. */
 static void draw_worker(Canvas *c, const Palette *pal, int x, int y, Eyes eyes, int look, Arms arms, int tick) {
     for (int r = 0; r < 12; r++) {
         const char *row = WORKER[r];
@@ -735,10 +1118,10 @@ static void draw_worker(Canvas *c, const Palette *pal, int x, int y, Eyes eyes, 
         }
     }
     /* raised arms live above the desk, so draw them with the body */
-    if (arms == ARM_UP || arms == ARM_WAVE) {
+    if (arms == ARM_UP || arms == ARM_WAVE || arms == ARM_STRETCH) {
         for (int side = 0; side < 2; side++) {
             if (arms == ARM_WAVE && side == 0) continue;
-            int up = (tick / 2 + side) % 2 ? 3 : 0;
+            int up = arms == ARM_STRETCH ? tick : (tick / 2 + side) % 2 ? 3 : 0;
             int ax = side ? x + 11 * WS : x - 1;
             R(c, ax, y + 4 * WS - up, WS + 1, 6 * WS, COL_OUTLINE);
             R(c, ax + 1, y + 4 * WS - up + 1, WS - 1, 6 * WS - 2, pal->dark);
@@ -821,7 +1204,8 @@ static void draw_bubble(Canvas *c, int x, int y, int w, int h, uint32_t fill) {
     R(c, x + w / 2 - 1, y + h + 2, 2, 2, COL_OUTLINE);
 }
 
-static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, int64_t now) {
+/* stretch_age: ms into an ambient stretch for this worker, -1 for none. */
+static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, int stretch_age, int64_t now) {
     const Row *row = &app->rows[i];
     const Agent *a = &row->agent;
     int sx, d;
@@ -831,7 +1215,7 @@ static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, i
     const Palette *pal = family_pal(a->family);
     int wx = sx + 26, wy = d - 30;
     int mx = sx + 80, my = d - 40;
-    int tick = (int)((now + ph) / 110);
+    int tick = (int)((now + ph) / (L->calm ? 330 : 110));
 
     int dy = 0, look = 0;
     Eyes eyes = EYE_OPEN;
@@ -868,11 +1252,28 @@ static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, i
         dy = 2;
         break;
     }
+    int raise = 0;
+    if (stretch_age >= 0) { /* arms up, eyes shut, a long reach */
+        arms = ARM_STRETCH;
+        eyes = EYE_CLOSED;
+        dy = -3;
+        raise = stretch_age < 400 ? stretch_age * 9 / 400 : stretch_age > 2000 ? (2400 - stretch_age) * 9 / 400 : 9;
+    }
 
     /* chair back, worker, desk, keyboard, hands, monitor */
     R(c, wx + 1, d - 16, 34, 18, 0x2a2f40);
     R(c, wx + 1, d - 16, 34, 2, 0x3d4459);
-    draw_worker(c, pal, wx, wy + dy, eyes, look, arms, tick);
+    draw_worker(c, pal, wx, wy + dy, eyes, look, arms, arms == ARM_STRETCH ? raise : tick);
+    if (a->ctx_pct >= CTX_WARN) { /* context nearly full: sweat drops */
+        int cyc = L->calm ? 1400 : 700;
+        for (int k = 0; k < 2; k++) {
+            int p = (int)((now + ph + k * cyc / 2) % cyc);
+            int fx = k ? wx - 3 : wx + 37, fy = wy + dy + 8 + p * 12 / cyc;
+            R(c, fx, fy, 2, 3, 0x7ac8ff);
+            R(c, fx, fy, 1, 1, 0xe8f6ff);
+            R(c, fx + (k ? -1 : 2), fy - 2, 1, 2, 0x7ac8ff);
+        }
+    }
     R(c, sx + 14, d + 31, 132, 3, L->shadow);
     R(c, sx + 18, d + 18, 5, 14, 0x3e2a1c);
     R(c, sx + 137, d + 18, 5, 14, 0x3e2a1c);
@@ -891,7 +1292,12 @@ static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, i
     }
     case ARM_REST: draw_hand(c, pal, wx + 2, d - 5), draw_hand(c, pal, wx + 26, d - 5); break;
     case ARM_WAVE: draw_hand(c, pal, wx + 2, d - 5); break;
-    case ARM_UP: break;
+    case ARM_UP:
+    case ARM_STRETCH: break;
+    }
+    if (a->ctx_pct >= CTX_WARN) { /* yellow flicker around the monitor */
+        bool on = L->calm ? (now / 1500) % 2 : hash_u((uint32_t)(now / 120) ^ h) % 5 != 0;
+        R(c, mx - 2, my - 2, 50, 36, on ? 0xf5c542 : 0x7a6a2a);
     }
     R(c, mx, my, 46, 32, 0x2b2f3a);
     R(c, mx, my, 46, 1, 0x454b5c);
@@ -914,6 +1320,17 @@ static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, i
                 R(c, sx + 133 + isin(st * 4 + k * 20) / 32, yy, 2, 2, 0x8a90a0);
             }
         }
+    }
+    if (a->ctx_pct >= CTX_FULL) { /* tiny warning sign on the desk */
+        int cx = sx + 68, top = d - 11;
+        for (int r = 0; r < 11; r++) {
+            int half = r * 6 / 10;
+            R(c, cx - half - 1, top + r, 2 * half + 3, 1, COL_OUTLINE);
+            if (r > 0 && r < 10) R(c, cx - half, top + r, 2 * half + 1, 1, 0xf5c542);
+        }
+        uint32_t bang = !L->calm && (now / 500) % 2 ? 0xc0302a : 0x2a1a10;
+        R(c, cx, top + 3, 1, 4, bang);
+        R(c, cx, top + 8, 1, 1, bang);
     }
 
     /* mood effects */
@@ -1035,6 +1452,15 @@ static void draw_particles(Canvas *c, const Scene *s, int64_t now) {
             }
             break;
         }
+        case P_PAPER: { /* the torn receipt flutters away, turning over as it goes */
+            int x = (int)(p->x + p->vx * t) + isin((int)(age / 40)) * 4 / 64;
+            int y = (int)(p->y + p->vy * t + 0.5f * p->g * t * t);
+            int f = (int)(age / 130) % 4, pw = f == 1 || f == 3 ? 4 : 10;
+            R(c, x - pw / 2, y, pw, 12, p->color);
+            if (pw > 4)
+                for (int k = 3; k < 12; k += 3) R(c, x - pw / 2 + 2, y + k, pw - 5, 1, 0xa8a090);
+            break;
+        }
         case P_HEART: {
             int x = (int)p->x + isin((int)p->vx + (int)(age / 45)) / 10;
             int y = (int)(p->y - p->vy * t);
@@ -1115,11 +1541,41 @@ static void draw_flash(Canvas *c, const Scene *s, int64_t now) {
     R(c, SCREEN_W - th, DEN_Y, th, DEN_B - DEN_Y, col);
 }
 
+/* "NEW! <cosmetic>" over the pet after EV_UNLOCKED (above the hatch/evolve banner if both). */
+static void draw_unlock_tag(Canvas *c, const Scene *s, int64_t now) {
+    int64_t age = now - s->unlock_at;
+    if (!s->unlock_at || age < 0 || age > UNLOCK_TAG_MS) return;
+    const char *name = pet_unlock_name(s->unlock_id);
+    int cw = gfx_font_w(FONT_BODY), nlen = (int)strlen(name);
+    if (nlen > 16) nlen = 16;
+    int tag_w = 4 * cw + 8, w = tag_w + (nlen ? nlen * cw + 10 : 0);
+    int x = (int)s->pet_x + 8 * PET_S - w / 2;
+    if (x < 8) x = 8;
+    if (x + w > SCREEN_W - 8) x = SCREEN_W - 8 - w;
+    bool banner = s->banner_at && now - s->banner_at >= 0 && now - s->banner_at <= 2600;
+    int y = (banner ? PET_Y - 84 : PET_Y - 30) - (age < 200 ? (int)(200 - age) / 10 : 0) - ((age / 600) % 2 ? 1 : 0);
+    R(c, x - 1, y - 1, w + 2, 24, COL_OUTLINE);
+    R(c, x, y, w, 22, 0x2a2140);
+    R(c, x, y, tag_w, 22, (age / 300) % 2 ? GOLD : 0xfff3b0);
+    gfx_text(c, FONT_BODY, x + 4, y + 1, 0x2a1a10, "NEW!", 0);
+    if (nlen) gfx_text(c, FONT_BODY, x + tag_w + 5, y + 1, TEXT, name, nlen);
+}
+
 void scene_draw_den(const Scene *s, const App *app, Canvas *c, int64_t now_ms) {
-    Light L = light_for(app);
-    draw_room(c, &L, app, now_ms);
+    Light L = light_for(app, now_ms);
+    draw_room(c, &L, s, app, now_ms);
+    pet_draw_den_decor(c, app, now_ms);
+    if (s) draw_rug_ripple(c, s, &L, now_ms);
+    draw_atm(c, s, app, &L, now_ms);
     int n = desk_count(app);
-    for (int i = 0; i < n; i++) draw_desk(c, app, &L, i, n, now_ms);
+    /* an ambient stretch goes to a dozing robot (none if nobody is) */
+    int stretcher = -1;
+    if (L.amb.kind == AMB_STRETCH && n > 0)
+        for (int k = 0; k < n && stretcher < 0; k++) {
+            int j = (int)((L.amb.h + (uint32_t)k) % (uint32_t)n);
+            if (app->rows[j].agent.bucket == B_DONE) stretcher = j;
+        }
+    for (int i = 0; i < n; i++) draw_desk(c, app, &L, i, n, i == stretcher ? (int)L.amb.age : -1, now_ms);
     if (n == 0) {
         const char *msg = "No agents right now";
         int w = (int)strlen(msg) * gfx_font_w(FONT_BODY);
@@ -1133,6 +1589,7 @@ void scene_draw_den(const Scene *s, const App *app, Canvas *c, int64_t now_ms) {
         draw_pet(c, s, app, &L, now_ms);
         draw_particles(c, s, now_ms);
         draw_banner(c, s, now_ms);
+        draw_unlock_tag(c, s, now_ms);
         draw_flash(c, s, now_ms);
     }
 }

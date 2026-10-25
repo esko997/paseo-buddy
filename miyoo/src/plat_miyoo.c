@@ -7,7 +7,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fb.h>
+#include <linux/i2c-dev.h>
+#include <linux/i2c.h>
 #include <linux/input.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -167,21 +170,61 @@ int plat_battery(void) {
     return pct;
 }
 
-/* Mirrors Onion's battery_isCharging() (src/common/system/battery.h): the Mini Plus asks the AXP223
- * PMIC through the stock axp_test tool ("charging":3 = on USB power); the original Mini reads GPIO 59. */
-static bool probe_charging(void) {
-    if (access("/customer/app/axp_test", X_OK) == 0) {
-        FILE *p = popen("cd /customer/app && ./axp_test 2>/dev/null", "r");
-        if (!p) return false;
-        char buf[128] = {0};
-        int charging = 0;
-        if (fgets(buf, sizeof buf, p)) {
-            const char *k = strstr(buf, "\"charging\":");
-            if (k) charging = atoi(k + 11);
+/* ---- AXP223 PMIC (Mini Plus) over I2C ------------------------------------------------------------
+ * Same access as OnionUI src/common/system/axp.h: /dev/i2c-1, 7-bit address 0x34, one I2C_RDWR
+ * transaction per read (register-address write + 1-byte read, atomic on the bus). Register meanings
+ * from the AXP223 datasheet (also Linux drivers/power/supply/axp20x_{usb,ac}_power.c, axp20x_battery.c):
+ *   REG 00h Power Input Status: bit7 ACIN present, bit6 ACIN usable, bit5 VBUS present, bit4 VBUS usable.
+ *   REG 33h Charge Control 1: bits 6:5 charge target 00 = 4.1 V, 01 = 4.22 V, 10 = 4.2 V (default),
+ *   11 = 4.24 V. */
+#define AXP_DEV "/dev/i2c-1"
+#define AXP_ADDR 0x34
+#define AXP_POWER_STATUS 0x00
+#define AXP_CHARGE_CTRL1 0x33
+#define AXP_EXT_POWER (0x80 | 0x20) /* ACIN or VBUS present */
+#define AXP_TARGET_MASK 0x60
+#define AXP_TARGET_4V1 0x00
+#define AXP_TARGET_4V2 0x40
+
+static int axp_fd = -2; /* -2: not opened yet, -1: no PMIC (original Mini, desktop) */
+
+static int axp_open(void) {
+    if (axp_fd == -2) {
+        axp_fd = open(AXP_DEV, O_RDWR | O_CLOEXEC);
+        if (axp_fd >= 0) {
+            ioctl(axp_fd, I2C_TIMEOUT, 5); /* units of 10 ms */
+            ioctl(axp_fd, I2C_RETRIES, 1);
         }
-        pclose(p);
-        return charging == 3;
     }
+    return axp_fd;
+}
+
+/* Register value 0..255, or -1. */
+static int axp_read(uint8_t reg) {
+    if (axp_open() < 0) return -1;
+    uint8_t val = 0;
+    struct i2c_msg msgs[2] = {
+        {.addr = AXP_ADDR, .flags = 0, .len = 1, .buf = &reg},
+        {.addr = AXP_ADDR, .flags = I2C_M_RD, .len = 1, .buf = &val},
+    };
+    struct i2c_rdwr_ioctl_data xfer = {.msgs = msgs, .nmsgs = 2};
+    return ioctl(axp_fd, I2C_RDWR, &xfer) < 0 ? -1 : val;
+}
+
+static bool axp_write(uint8_t reg, uint8_t val) {
+    if (axp_open() < 0) return false;
+    uint8_t buf[2] = {reg, val};
+    struct i2c_msg msg = {.addr = AXP_ADDR, .flags = 0, .len = 2, .buf = buf};
+    struct i2c_rdwr_ioctl_data xfer = {.msgs = &msg, .nmsgs = 1};
+    return ioctl(axp_fd, I2C_RDWR, &xfer) >= 0;
+}
+
+/* External power, not "charging": with battery care the charger stops at 4.1 V but the cable is
+ * still in. The Mini Plus asks the AXP223 (one I2C transaction, well under a millisecond); the
+ * original Mini has no PMIC and reports charging on GPIO 59, as in Onion's battery_isCharging(). */
+bool plat_on_power(void) {
+    int status = axp_read(AXP_POWER_STATUS);
+    if (status >= 0) return (status & AXP_EXT_POWER) != 0;
     FILE *f = fopen("/sys/class/gpio/gpio59/value", "r");
     if (!f) return false;
     int c = fgetc(f);
@@ -189,33 +232,62 @@ static bool probe_charging(void) {
     return c == '1';
 }
 
-/* popen + a PMIC query can take a while, so it runs on its own thread (every 15 s) and the UI
- * loop only reads the cached answer. */
-static volatile int charging_cached;
-static pthread_once_t charging_once = PTHREAD_ONCE_INIT;
+static const char *target_name(int reg) {
+    static const char *names[] = {"4.1V", "4.22V", "4.2V", "4.24V"};
+    return names[(reg & AXP_TARGET_MASK) >> 5];
+}
 
-static void *charging_main(void *arg) {
-    (void)arg;
-    for (;;) {
-        __atomic_store_n(&charging_cached, probe_charging(), __ATOMIC_RELAXED);
-        sleep(15);
+/* Read-modify-write of REG 33h bits 6:5 only; nothing else on the PMIC is ever written. */
+void plat_battery_care(bool on) {
+    int old = axp_read(AXP_CHARGE_CTRL1);
+    if (old < 0) return; /* no AXP223 */
+    int target = old & AXP_TARGET_MASK;
+    int want;
+    if (on) want = AXP_TARGET_4V1;
+    else if (target == AXP_TARGET_4V1) want = AXP_TARGET_4V2; /* undo our own setting only */
+    else want = target;
+    if (want == target) {
+        fprintf(stderr, "battery care: REG33=0x%02x (charge target %s), unchanged\n", old, target_name(old));
+        return;
     }
-    return NULL;
+    uint8_t val = (uint8_t)((old & ~AXP_TARGET_MASK) | want);
+    int now = axp_write(AXP_CHARGE_CTRL1, val) ? axp_read(AXP_CHARGE_CTRL1) : -1;
+    fprintf(stderr, "battery care: REG33 0x%02x (%s) -> 0x%02x, read back 0x%02x (%s)\n", old, target_name(old), val,
+            now & 0xff, now >= 0 ? target_name(now) : "write failed");
 }
 
-static void charging_start(void) {
-    pthread_t t;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_attr_setstacksize(&attr, 64 * 1024);
-    pthread_create(&t, &attr, charging_main, NULL);
-    pthread_attr_destroy(&attr);
+/* ---- backlight level ------------------------------------------------------------------------------
+ * Onion's level -> PWM duty curve (src/common/system/display.h display_setBrightness):
+ * duty = round(3.0 * exp(0.350656 * level)), level 0..10 (3..100). */
+#define PWM_DUTY "/sys/devices/soc0/soc/1f003400.pwm/pwm/pwmchip0/pwm0/duty_cycle"
+
+void plat_brightness(int level) {
+    if (level < 0) level = 0;
+    if (level > 10) level = 10;
+    char buf[16];
+    snprintf(buf, sizeof buf, "%d", (int)lround(3.0 * exp(0.350656 * level)));
+    sysfs_write(PWM_DUTY, buf);
 }
 
-bool plat_charging(void) {
-    pthread_once(&charging_once, charging_start);
-    return __atomic_load_n(&charging_cached, __ATOMIC_RELAXED) != 0;
+/* Onion's saved brightness ("brightness": 0..10 in /appconfigs/system.json), or -1. */
+int plat_brightness_setting(void) {
+    FILE *f = fopen("/appconfigs/system.json", "r");
+    if (!f) return -1;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    const char *k = strstr(buf, "\"brightness\"");
+    int level = -1;
+    if (k && sscanf(k + 12, " : %d", &level) != 1) level = -1;
+    return level < 0 ? -1 : level > 10 ? 10 : level;
+}
+
+/* Onion's keymon skips its idle hibernate while /tmp/stay_awake exists (as GMU and FFplay do);
+ * runtime.sh deletes the flag after every app exits. */
+void plat_stay_awake(bool on) {
+    if (on) close(open("/tmp/stay_awake", O_WRONLY | O_CREAT | O_CLOEXEC, 0644));
+    else unlink("/tmp/stay_awake");
 }
 
 /* ---- audio -------------------------------------------------------------------------------------
