@@ -4,7 +4,7 @@
 import { createPaseoClient } from "@getpaseo/client";
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync, existsSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -119,9 +119,12 @@ function clean(s, max = 200) {
   return (ascii || "-").slice(0, max);
 }
 
+// Fedora Atomic (Bazzite) symlinks /home -> /var/home, so agents may report either spelling.
+const HOMES = [...new Set([homedir(), realpathSync(homedir())])];
+
 function shortCwd(cwd) {
-  const home = homedir();
-  return cwd?.startsWith(home) ? "~" + cwd.slice(home.length) : cwd;
+  const home = HOMES.find((h) => cwd === h || cwd?.startsWith(h + "/"));
+  return home ? "~" + cwd.slice(home.length) : cwd;
 }
 
 const epoch = (iso) => (iso ? Math.floor(Date.parse(iso) / 1000) : 0);
