@@ -182,12 +182,18 @@ const waiters = new Set();
 // per limit window. On a failed poll the last good snapshot is kept; usage_at tells the device its age.
 let usageLines = [];
 
+// Antigravity also resells Claude/GPT ("google-antigravity:anthropic:…", "…:openai:…"); only its own
+// Google-model quotas ("google-antigravity:google:…") count as Antigravity fuel.
+function isPassthrough(provider, limit) {
+  return provider === "google-antigravity" && !String(limit.id ?? "").startsWith("google-antigravity:google:");
+}
+
 function parseOmpUsage(json) {
   const rows = [];
   for (const report of json.reports ?? []) {
     for (const limit of report.limits ?? []) {
       const frac = limit.amount?.usedFraction;
-      if (typeof frac !== "number") continue;
+      if (typeof frac !== "number" || isPassthrough(report.provider, limit)) continue;
       rows.push(
         [
           "usage",
