@@ -426,6 +426,63 @@ ItemSet pet_check_unlocks(Pet *p, int64_t now, int32_t tz_offset) {
     return fresh;
 }
 
+/* ---- evolution: generated adult forms, unlocked by lifetime XP and switched freely ------------ */
+
+#define FIRST_FORM_XP 2000000 /* stage_threshold(STAGE_TEEN): form 1 is ready on reaching adulthood */
+#define FORM_STEP_XP 500000
+#define N_TRAITS 7
+
+/* Fixed at birth from name and birth time; its own hash, so it never follows the find sequence. */
+static uint64_t dna_seed(const Pet *p) {
+    uint64_t h = UINT64_C(0x6A09E667F3BCC908);
+    for (const char *c = p->name; *c; c++) h = (h ^ (uint8_t)*c) * UINT64_C(0x100000001B3);
+    h ^= (uint64_t)p->born * UINT64_C(0xD6E8FEB86659FD93);
+    return splitmix64(&h);
+}
+
+uint64_t pet_dna(const Pet *p) { return p->dna ? p->dna : dna_seed(p); }
+
+int64_t pet_form_threshold(int form) {
+    if (form < 1 || form >= PET_FORMS) return 0;
+    return FIRST_FORM_XP + (int64_t)(form - 1) * form * FORM_STEP_XP;
+}
+
+int pet_forms_available(const Pet *p) {
+    if (p->stage < STAGE_ADULT) return 1;
+    int n = 1;
+    while (n < PET_FORMS && p->xp >= pet_form_threshold(n)) n++;
+    return n;
+}
+
+PetTraits pet_form_traits(const Pet *p, int form) {
+    PetTraits t = {0};
+    if (form < 1 || form >= PET_FORMS) return t;
+    Family family = p->stage == STAGE_ADULT ? p->adult_family : pet_favorite(p);
+    uint64_t h = pet_dna(p) ^ (UINT64_C(0x9E3779B97F4A7C15) * (uint64_t)(family + 1));
+    uint64_t x = splitmix64(&h);
+    uint8_t v[N_TRAITS];
+    for (int i = 0; i < N_TRAITS; i++, x /= 3) v[i] = (uint8_t)(x % 3);
+    int first = (int)(x % N_TRAITS); /* which trait changes first, then cyclically */
+    for (int k = 2; k <= form; k++) {
+        int i = (first + k - 2) % N_TRAITS;
+        v[i] = (uint8_t)((v[i] + 1) % 3);
+    }
+    t.body = v[0], t.ears = v[1], t.tail = v[2], t.crown = v[3];
+    t.wings = v[4], t.markings = v[5], t.motion = v[6];
+    return t;
+}
+
+bool pet_choose_form(Pet *p, int form) {
+    if (form < 0 || form >= pet_forms_available(p) || form == p->form) return false;
+    p->form = (uint8_t)form;
+    return true;
+}
+
+void pet_seen_forms(Pet *p) {
+    int top = pet_forms_available(p) - 1;
+    if (top > p->forms_seen) p->forms_seen = (uint8_t)top;
+}
+
 void pet_init(Pet *p, const char *name, int64_t now) {
     memset(p, 0, sizeof *p);
     snprintf(p->name, sizeof p->name, "%s", name);
@@ -435,6 +492,7 @@ void pet_init(Pet *p, const char *name, int64_t now) {
     memset(p->equipped, -1, sizeof p->equipped);
     p->find_day = -1;
     p->find_rng = find_seed(p);
+    p->dna = dna_seed(p);
 }
 
 bool pet_asleep(int64_t now, int32_t tz_offset) {
@@ -535,7 +593,8 @@ bool pet_save_needed(const Pet *now, const Pet *saved) {
         memcmp(&now->unlocked, &saved->unlocked, sizeof now->unlocked) != 0 || strcmp(now->name, saved->name) != 0 ||
         memcmp(now->diet, saved->diet, sizeof now->diet) != 0 ||
         memcmp(now->equipped, saved->equipped, sizeof now->equipped) != 0 || now->find_points != saved->find_points ||
-        now->find_tokens != saved->find_tokens || now->find_day != saved->find_day || now->find_rng != saved->find_rng)
+        now->find_tokens != saved->find_tokens || now->find_day != saved->find_day || now->find_rng != saved->find_rng ||
+        now->dna != saved->dna || now->form != saved->form || now->forms_seen != saved->forms_seen)
         return true;
     for (int i = 0; i < PET_LEDGERS; i++) {
         const LedgerSeen *a = &now->seen[i], *b = &saved->seen[i];
@@ -582,6 +641,7 @@ bool pet_save(const Pet *p, const char *path) {
     for (int i = 0; i < N_WEAR; i++) fprintf(f, i ? " %d" : "%d", p->equipped[i]);
     fprintf(f, "\nfind_points=%lld\nfind_tokens=%lld\nfind_day=%lld\nfind_rng=%llx\n", (long long)p->find_points,
             (long long)p->find_tokens, (long long)p->find_day, (unsigned long long)p->find_rng);
+    fprintf(f, "dna=%llx\nform=%d\nforms_seen=%d\n", (unsigned long long)p->dna, p->form, p->forms_seen);
     for (int i = 0; i < PET_LEDGERS; i++) {
         const LedgerSeen *s = &p->seen[i];
         if (!s->ledger_id[0]) continue;
@@ -602,6 +662,7 @@ bool pet_load(Pet *p, const char *path) {
     memset(p->equipped, -1, sizeof p->equipped); /* files from before cosmetics: nothing worn */
     p->find_day = -1;                            /* files from before finds: the welcome find is pending */
     bool have_rng = false;
+    int form = 0, forms_seen = 0; /* files from before forms: the original look, nothing browsed */
     char line[256];
     int n_seen = 0;
     long long a, b, c, d, e, g, h;
@@ -628,6 +689,9 @@ bool pet_load(Pet *p, const char *path) {
         else if (!strcmp(k, "find_tokens")) p->find_tokens = atoll(v);
         else if (!strcmp(k, "find_day")) p->find_day = atoll(v);
         else if (!strcmp(k, "find_rng")) p->find_rng = strtoull(v, NULL, 16), have_rng = true;
+        else if (!strcmp(k, "dna")) p->dna = strtoull(v, NULL, 16);
+        else if (!strcmp(k, "form")) form = atoi(v);
+        else if (!strcmp(k, "forms_seen")) forms_seen = atoi(v);
         else if (!strcmp(k, "unlocked")) { /* one hex word per 64 ids, lowest first; older files have one */
             char *end;
             for (int w = 0; w < ITEMSET_BITS / 64; w++, v = end) {
@@ -665,5 +729,9 @@ bool pet_load(Pet *p, const char *path) {
     if (p->find_tokens < 0 || p->find_tokens >= 1000) p->find_tokens = 0;
     if (p->find_day < -1) p->find_day = -1;
     cap_points(p);
+    if (!p->dna) p->dna = dna_seed(p); /* first load since forms: the DNA it was born with */
+    int ready = pet_forms_available(p); /* only reached forms; anything else falls back to the original */
+    p->form = (uint8_t)(form > 0 && form < ready ? form : 0);
+    p->forms_seen = (uint8_t)(forms_seen > 0 ? (forms_seen < ready ? forms_seen : ready - 1) : 0);
     return true;
 }

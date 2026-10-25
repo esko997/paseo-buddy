@@ -417,7 +417,7 @@ static bool handle(App *app, Button b, int64_t now_ms) {
         return true;
     }
     if (app->screen == SCREEN_PET && pet_screen_handle(app, b, now_ms)) {
-        g_save_now = true; /* wardrobe changes; saved only if something actually changed */
+        g_save_now = true; /* outfit/form choices; saved only if something actually changed */
         return true;
     }
     if (app->screen == SCREEN_DETAIL) {

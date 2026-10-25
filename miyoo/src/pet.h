@@ -182,6 +182,18 @@ enum {
 /* Activity points per find: 1 per completed turn, 1 per 1000 fresh output tokens. */
 #define FIND_POINTS 1000
 
+/* Adult forms: form 0 is the original look; forms 1..15 are generated from the pet's DNA and adult
+ * family. Ids are stable and never reroll; every reached form stays switchable and choosing one
+ * never consumes anything. */
+#define PET_FORMS 16
+
+/* Each trait is 0..2. body round/square/pear; ears rounded/pointed/drooping; tail curl/fin/tuft;
+ * crown antenna/horns/sprout; wings small/feather/fin; markings freckles/belly/stripes;
+ * motion bounce/float/waddle. Only meaningful for forms 1..15 (form 0 is the existing art). */
+typedef struct {
+    uint8_t body, ears, tail, crown, wings, markings, motion;
+} PetTraits;
+
 #define PET_LEDGERS 8
 
 typedef struct {
@@ -220,6 +232,11 @@ typedef struct {
     int64_t find_tokens; /* fresh output tokens not yet worth a point, 0..999 */
     int64_t find_day;    /* bridge-local day (as `day`) of the last drawn find; -1 = welcome find pending */
     uint64_t find_rng;   /* pet-specific draw sequence state */
+    /* Evolution: `dna` is fixed at birth (0 = not stored yet; see pet_dna()), `form` is the worn
+     * form 0..PET_FORMS-1 and `forms_seen` the highest ready form already browsed (NEW indicator). */
+    uint64_t dna;
+    uint8_t form;
+    uint8_t forms_seen;
 } Pet;
 
 typedef struct {
@@ -287,3 +304,23 @@ int pet_finds_left(const Pet *p);
 int64_t pet_find_progress(const Pet *p);
 /* A find is ready but waits for a later bridge-local day (today's draw is used). */
 bool pet_find_waiting(const Pet *p, int64_t now, int32_t tz_offset);
+
+/* Evolution. Stored DNA, or the deterministic fallback from name and birth time; never depends on
+ * the mutable find sequence. */
+uint64_t pet_dna(const Pet *p);
+/* Lifetime tokens that unlock a form: 0 for the original (and invalid forms),
+ * 2000000 + (form - 1) * form * 500000 for forms 1..15. */
+int64_t pet_form_threshold(int form);
+/* Forms ready to wear including the original: 1 before adulthood, then 1 + generated forms whose
+ * threshold lifetime XP has reached (at most PET_FORMS). Ready forms are always 0..n-1. */
+int pet_forms_available(const Pet *p);
+/* Traits of generated form 1..15 (all zero for 0 or invalid). Form 1 comes from the DNA mixed with
+ * the adult family (the current favorite, as a preview, before adulthood); each later form bumps
+ * one trait by 1 mod 3, cycling through the seven fields, so all fifteen are distinct and
+ * neighbours share six traits. */
+PetTraits pet_form_traits(const Pet *p, int form);
+/* Wears a ready form. False (and no change) for an invalid, locked or already worn form. Never
+ * touches equipment, XP or unlocks. */
+bool pet_choose_form(Pet *p, int form);
+/* Marks every currently ready form as seen. */
+void pet_seen_forms(Pet *p);

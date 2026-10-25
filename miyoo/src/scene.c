@@ -12,6 +12,7 @@
 #include "scene.h"
 #include "pet_view.h"
 #include "appearance.h"
+#include "morphology.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -216,11 +217,6 @@ static void bitmap8(Canvas *c, const uint8_t *rows, int x, int y, int s, uint32_
 
 static const Palette *family_pal(Family f) { return &PALETTES[(unsigned)f < N_FAMILIES ? f : FAM_OTHER]; }
 
-static const Palette *pet_pal(const Pet *p) {
-    if (p->stage == STAGE_ADULT) return family_pal(p->adult_family);
-    int64_t fed = p->diet[0] + p->diet[1] + p->diet[2] + p->diet[3];
-    return &PALETTES[fed ? (int)pet_favorite(p) : PAL_UNFED];
-}
 
 /* Unlock id worn in a slot, -1 when nothing is (or the pet isn't loaded yet). */
 static int worn(const App *app, int slot) { return app->pet_ready ? pet_worn(&app->pet, slot) : -1; }
@@ -389,8 +385,9 @@ static void handle_event(Scene *s, const App *app, const Event *e, int64_t now) 
         s->banner_at = now;
         if (e->kind == EV_HATCHED) snprintf(s->banner, sizeof s->banner, "Hatched!");
         else snprintf(s->banner, sizeof s->banner, "%s!", stage_name(app->pet.stage));
-        const Palette *pal = pet_pal(&app->pet);
-        uint32_t cols[3] = {0xffffff, GOLD, pal->accent};
+        Palette pal;
+        morphology_palette(&app->pet, &pal);
+        uint32_t cols[3] = {0xffffff, GOLD, pal.accent};
         for (int i = 0; i < 30; i++) {
             Particle *p = spawn(s, P_SPARKLE, now + rrange(s, 0, 260), 900 + rrange(s, 0, 500));
             int a = rrange(s, 0, 63), r = rrange(s, 40, 120);
@@ -418,8 +415,9 @@ static void handle_event(Scene *s, const App *app, const Event *e, int64_t now) 
     case EV_UNLOCKED: {
         s->unlock_id = (int)e->amount;
         s->unlock_at = now;
-        const Palette *pal = pet_pal(&app->pet);
-        uint32_t cols[4] = {0xffffff, GOLD, pal->accent, 0xff9fd0};
+        Palette pal;
+        morphology_palette(&app->pet, &pal);
+        uint32_t cols[4] = {0xffffff, GOLD, pal.accent, 0xff9fd0};
         for (int i = 0; i < 22; i++) {
             Particle *p = spawn(s, P_SPARKLE, now + rrange(s, 0, 400), 800 + rrange(s, 0, 500));
             int a = rrange(s, 0, 63), r = rrange(s, 34, 96);
@@ -828,16 +826,22 @@ static void draw_window(Canvas *c, const Light *L, int view, int64_t now) {
 static void draw_hud(Canvas *c, const App *app, int64_t now) {
     if (!app->pet_ready) return;
     const Pet *p = &app->pet;
-    const Palette *pal = pet_pal(p);
+    Palette pal;
+    morphology_palette(p, &pal);
     gfx_text_fit(c, FONT_BIG, 14, 46, TEXT, p->name[0] ? p->name : "Pet", 186);
     char xp[16], line[40];
     format_tokens(p->xp, xp, sizeof xp);
-    int w = gfx_text(c, FONT_BODY, 14, 80, pal->light, stage_name(p->stage), 0);
+    int w = gfx_text(c, FONT_BODY, 14, 80, pal.light, stage_name(p->stage), 0);
     snprintf(line, sizeof line, " %s tok", xp);
     gfx_text(c, FONT_BODY, 14 + w, 80, DIM, line, 0);
 
     int64_t next = stage_threshold(p->stage);
     int64_t prev = p->stage == STAGE_EGG ? 0 : stage_threshold((Stage)(p->stage - 1));
+    if (p->stage == STAGE_ADULT) {
+        int available = pet_forms_available(p);
+        next = pet_form_threshold(available);
+        prev = pet_form_threshold(available - 1);
+    }
     int segs = 12, full = segs, partial = 0;
     if (next > prev) {
         int64_t num = (p->xp - prev) * segs * 4;
@@ -851,12 +855,12 @@ static void draw_hud(Canvas *c, const App *app, int64_t now) {
     for (int i = 0; i < segs; i++) {
         int x = 14 + i * 10;
         uint32_t col = 0x303648;
-        if (i < full) col = pal->body;
-        else if (i == full && (partial || (now / 400) % 2)) col = lerp_col(0x303648, pal->light, 90 + partial * 40);
+        if (i < full) col = pal.body;
+        else if (i == full && (partial || (now / 400) % 2)) col = lerp_col(0x303648, pal.light, 90 + partial * 40);
         R(c, x, 106, 9, 10, col);
-        if (i < full) R(c, x, 106, 9, 2, pal->light);
+        if (i < full) R(c, x, 106, 9, 2, pal.light);
     }
-    /* next stage target beside the bar */
+    /* Next stage or inherited adult form target beside the bar. */
     if (next > prev) format_tokens(next, line, sizeof line);
     else snprintf(line, sizeof line, "max");
     gfx_text_fit(c, FONT_BODY, 22 + segs * 10, 101, 0x6a7080, line, 60);

@@ -86,6 +86,11 @@ typedef struct {
     bool wardrobe_open;
     int wardrobe_slot, wardrobe_sel;
 
+    /* Forms browser on the Pet screen (evolution_view.c owns the behaviour): the open flag and the
+     * previewed form 0..PET_FORMS-1. Browsing never changes the pet; only A on a ready form does. */
+    bool evolution_open;
+    int evolution_sel;
+
     /* Today across all bridges (bridge-local day), for the den's ATM. Computed by main.c from
      * each Feed's `today` line; only bridges reporting the newest day count. */
     int64_t day_tokens;

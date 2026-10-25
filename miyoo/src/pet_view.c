@@ -5,6 +5,8 @@
 
 #include "appearance.h"
 #include "cosmetics.h"
+#include "evolution_view.h"
+#include "morphology.h"
 #include "sprites.h"
 #include "theme.h"
 
@@ -14,26 +16,33 @@
 
 /* ---- drawing the pet ------------------------------------------------------------------------ */
 
-static int pal_index(const Pet *p) {
-    if (p->stage == STAGE_ADULT) return p->adult_family;
-    int64_t fed = p->diet[0] + p->diet[1] + p->diet[2] + p->diet[3];
-    return fed ? (int)pet_favorite(p) : PAL_UNFED;
+/* The form the pet wears: generated forms show only on adults, earlier stages keep the classic art. */
+static int worn_form(const Pet *p) { return p->stage == STAGE_ADULT && p->form < PET_FORMS ? p->form : 0; }
+
+/* Colours per sprite row for coat id (or -1). A new coat's own palette, else the old shiny coat
+ * blended by diet like the natural colours, else the natural diet blend with its vertical gradient.
+ * Coats are flat: they override the natural palette whatever the pet ate. */
+static void pet_rows(const Pet *p, int coat, Palette rows[16]) {
+    const Palette *fixed = appearance_coat_palette(coat);
+    Palette base;
+    if (fixed) {
+        base = *fixed;
+    } else if (coat == U_SHINY) {
+        morphology_mix(p, SHINY_PALETTES, &base);
+    } else {
+        morphology_palette(p, &base);
+        morphology_gradient(&base, rows);
+        return;
+    }
+    for (int r = 0; r < 16; r++) rows[r] = base;
 }
 
-/* A coat's own palette first, then the old shiny recolor of the pet's family, then its family colors. */
-static const Palette *coat_palette(const Pet *p, int coat) {
-    const Palette *pal = appearance_coat_palette(coat);
-    if (pal) return pal;
-    return coat == U_SHINY ? &SHINY_PALETTES[pal_index(p)] : &PALETTES[pal_index(p)];
-}
-
-static const Palette *pet_palette(const Pet *p) { return coat_palette(p, pet_worn(p, WEAR_SHINY)); }
-
-static void blit_layer(Canvas *c, const Sprite spr, int x, int y, int s, const Palette *pal, Mood mood, bool blink,
+static void blit_shape(Canvas *c, MorphGrid g, int x, int y, int s, const Palette rows[16], Mood mood, bool blink,
                        bool chomp) {
     for (int r = 0; r < 16; r++) {
+        const Palette *pal = &rows[r];
         for (int col = 0; col < 16; col++) {
-            char ch = spr[r][col];
+            char ch = g[r][col];
             uint32_t color;
             switch (ch) {
             case 'o': color = COL_OUTLINE; break;
@@ -46,7 +55,7 @@ static void blit_layer(Canvas *c, const Sprite spr, int x, int y, int s, const P
             case 'm': color = (chomp || mood == MOOD_SLEEP) ? pal->body : COL_MOUTH; break;
             case 'E': {
                 /* Eyes are two pixels tall; the upper one decides open/closed/looking up. */
-                bool upper = r + 1 < 16 && spr[r + 1][col] == 'E';
+                bool upper = r + 1 < 16 && g[r + 1][col] == 'E';
                 bool closed = blink || mood == MOOD_SLEEP || mood == MOOD_HAPPY;
                 if (upper) color = closed ? pal->body : (mood == MOOD_ALERT ? COL_SHELL : COL_OUTLINE);
                 else color = COL_OUTLINE;
@@ -57,6 +66,12 @@ static void blit_layer(Canvas *c, const Sprite spr, int x, int y, int s, const P
             gfx_rect(c, x + col * s, y + r * s, s, s, color);
         }
     }
+}
+
+static void blit_silhouette(Canvas *c, MorphGrid g, int x, int y, int s, uint32_t color) {
+    for (int r = 0; r < 16; r++)
+        for (int col = 0; col < 16; col++)
+            if (g[r][col] != '.') gfx_rect(c, x + col * s, y + r * s, s, s, color);
 }
 
 /* A cosmetic layer shifted by (dx,dy) sprite pixels. silhouette != 0 draws every pixel in that color
@@ -86,52 +101,45 @@ static void blit_item(Canvas *c, const Cosmetic *k, int x, int y, int s, int dx,
     }
 }
 
-/* Worn layers are drawn for SPR_KID; the baby is narrower and sits a row lower. */
-static void wear_nudge(Stage st, int slot, int *dx, int *dy) {
+/* Worn layers are drawn for SPR_KID (and the generated forms, which share its anchors); the baby is
+ * narrower and sits a row lower. */
+static void wear_nudge(bool baby, int slot, int *dx, int *dy) {
     *dx = *dy = 0;
-    if (st != STAGE_BABY) return;
+    if (!baby) return;
     *dy = 1;
     if (slot == WEAR_HELD) *dx = -1;
 }
 
-/* `ghost` (an unlock id or -1) is drawn as a silhouette in its slot: the wardrobe's locked preview. */
-static void draw_pet(Canvas *c, const Pet *p, Mood mood, int x, int y, int s, int64_t now_ms, int ghost) {
-    const Palette *pal = pet_palette(p);
+/* p drawn as `form` (morphology_shape) with its worn cosmetics and colours. `ghost` (an unlock id or
+ * -1) is drawn as a silhouette in its slot: the wardrobe's locked preview. */
+static void draw_form(Canvas *c, const Pet *p, int form, Mood mood, int x, int y, int s, int64_t now_ms, int ghost) {
+    Palette rows[16];
+    pet_rows(p, pet_worn(p, WEAR_SHINY), rows);
     int tick = (int)(now_ms / 125); /* 8 Hz animation clock */
     bool blink = (now_ms / 100) % 37 == 0;
     bool chomp = mood == MOOD_EATING && (tick / 2) % 2;
-    int bob = 0, wobble = 0;
-    if (p->stage == STAGE_EGG) {
-        if (mood == MOOD_ALERT || (tick / 4) % 6 == 0) wobble = ((tick / 2) % 2 ? 1 : -1) * (s / 2);
-    } else if (mood == MOOD_ALERT) {
-        bob = (tick % 2) ? -s : 0;
-    } else if (mood != MOOD_SLEEP) {
-        bob = ((tick / 4) % 2) ? -s / 2 : 0;
-    }
-    int px = x + wobble, py = y + bob;
     bool hat = pet_worn(p, WEAR_HAT) >= 0 || pet_unlock_slot(ghost) == WEAR_HAT;
-    if (p->stage == STAGE_EGG) {
-        blit_layer(c, SPR_EGG, px, py, s, pal, mood, false, false);
-    } else if (p->stage == STAGE_BABY) {
-        blit_layer(c, SPR_BABY, px, py, s, pal, mood, blink, chomp);
+    bool generated = form >= 1 && form < PET_FORMS;
+    bool egg = !generated && p->stage == STAGE_EGG, baby = !generated && p->stage == STAGE_BABY;
+    MorphGrid g;
+    int motion = morphology_shape(p, form, hat, g);
+    int dx = 0, dy = 0;
+    if (egg) {
+        if (mood == MOOD_ALERT || (tick / 4) % 6 == 0) dx = ((tick / 2) % 2 ? 1 : -1) * (s / 2);
     } else {
-        blit_layer(c, SPR_KID, px, py, s, pal, mood, blink, chomp);
-        /* A hat sits where the antenna/crest would poke out; the crest comes back when it's off. */
-        if (p->stage == STAGE_TEEN && !hat) blit_layer(c, OVL_ANTENNA, px, py, s, pal, mood, false, false);
-        if (p->stage == STAGE_ADULT) {
-            if (!hat) blit_layer(c, OVL_CREST[p->adult_family], px, py, s, pal, mood, false, false);
-            blit_layer(c, OVL_WINGS, px, py, s, pal, mood, false, false);
-        }
+        morphology_motion(motion, mood, now_ms, s, &dx, &dy);
     }
-    if (p->stage != STAGE_EGG) { /* eggs keep their outfit for later */
+    int px = x + dx, py = y + dy;
+    blit_shape(c, g, px, py, s, rows, mood, !egg && blink, !egg && chomp);
+    if (!egg) { /* eggs keep their outfit for later */
         int phase = tick / 3;
         for (int slot = WEAR_HAT; slot <= WEAR_HELD; slot++) {
-            int id = pet_worn(p, slot), dx, dy;
+            int id = pet_worn(p, slot), ox, oy;
             bool ghosted = pet_unlock_slot(ghost) == slot;
             if (ghosted) id = ghost;
             if (id < 0) continue;
-            wear_nudge(p->stage, slot, &dx, &dy);
-            blit_item(c, &COSMETICS[id], px, py, s, dx, dy, ghosted ? SILHOUETTE : 0, phase);
+            wear_nudge(baby, slot, &ox, &oy);
+            blit_item(c, &COSMETICS[id], px, py, s, ox, oy, ghosted ? SILHOUETTE : 0, phase);
         }
         /* only the old shiny coat sparkles; the newer coats are plain recolors */
         if (pet_worn(p, WEAR_SHINY) == U_SHINY && (tick / 4) % 3 != 2) blit_item(c, &SHINE, px, py, s, 0, 0, 0, tick / 4);
@@ -148,7 +156,7 @@ static void draw_pet(Canvas *c, const Pet *p, Mood mood, int x, int y, int s, in
     case MOOD_WORKING: {
         char dots[4] = "   ";
         for (int i = 0; i <= tick % 4 && i < 3; i++) dots[i] = '.';
-        gfx_text(c, FONT_BIG, right - 3 * s, y, pal->accent, dots, 0);
+        gfx_text(c, FONT_BIG, right - 3 * s, y, rows[0].accent, dots, 0);
         break;
     }
     case MOOD_HAPPY:
@@ -159,10 +167,19 @@ static void draw_pet(Canvas *c, const Pet *p, Mood mood, int x, int y, int s, in
     }
 }
 
+/* The pet as it is: its worn form. */
+static void draw_pet(Canvas *c, const Pet *p, Mood mood, int x, int y, int s, int64_t now_ms, int ghost) {
+    draw_form(c, p, worn_form(p), mood, x, y, s, now_ms, ghost);
+}
+
 void ui_draw_pet(Canvas *c, const App *app, int x, int y, int s, int64_t now_ms) {
     const Pet *p = &app->pet;
     Mood mood = pet_mood(p, app_now(app), app->tz_offset, app->n_alerts, app->n_running);
     draw_pet(c, p, mood, x, y, s, now_ms, -1);
+}
+
+void pet_draw_form_preview(Canvas *c, const Pet *p, int form, int x, int y, int scale, int64_t now_ms) {
+    draw_form(c, p, form >= 1 && form < PET_FORMS ? form : 0, MOOD_IDLE, x, y, scale, now_ms, -1);
 }
 
 /* ---- item art outside the pet: icons, shelf ornaments, rug motifs ---------------------------- */
@@ -209,22 +226,26 @@ static Cosmetic animated(int id, int64_t now_ms) {
 }
 
 /* Any item centered in a w x h box, at most max_s pixels per art pixel (generic cosmetics only). Walls,
- * windows and robot costumes draw their own art; coats show the pet's shape in that coat. */
+ * windows and robot costumes draw their own art; coats show the pet's own shape (its worn form, or the
+ * kid it will hatch into) in that coat. */
 static void draw_icon(Canvas *c, const Pet *p, int id, int x, int y, int w, int h, bool locked, int max_s,
                       int64_t now_ms) {
     int tick = (int)(now_ms / 125);
     if (appearance_draw_preview(c, id, x, y, w, h, locked, now_ms)) return;
     if (pet_unlock_slot(id) == WEAR_SHINY) {
         int s = (w < h ? w : h) / 16, px = x + (w - 16 * s) / 2, py = y + (h - 16 * s) / 2;
+        MorphGrid g;
+        if (p->stage == STAGE_EGG)
+            for (int r = 0; r < 16; r++) memcpy(g[r], SPR_KID[r], 17);
+        else
+            morphology_shape(p, worn_form(p), false, g);
         if (locked) {
-            for (int r = 0; r < 16; r++)
-                for (int col = 0; col < 16; col++)
-                    if (SPR_KID[r][col] != '.') gfx_rect(c, px + col * s, py + r * s, s, s, SILHOUETTE);
+            blit_silhouette(c, g, px, py, s, SILHOUETTE);
             return;
         }
-        const Palette *pal = coat_palette(p, id);
-        blit_layer(c, SPR_KID, px, py, s, pal, MOOD_IDLE, false, false);
-        if (p->stage == STAGE_ADULT) blit_layer(c, OVL_WINGS, px, py, s, pal, MOOD_IDLE, false, false);
+        Palette rows[16];
+        pet_rows(p, id, rows);
+        blit_shape(c, g, px, py, s, rows, MOOD_IDLE, false, false);
         if (id == U_SHINY) blit_item(c, &SHINE, px, py, s, 0, 0, 0, tick / 4);
         return;
     }
@@ -290,7 +311,8 @@ static void stat_line(Canvas *c, int x, int y, const char *label, const char *va
 }
 
 double pet_xp_progress(const Pet *p, char *buf, size_t len) {
-    int64_t next = stage_threshold(p->stage);
+    int available = pet_forms_available(p);
+    int64_t next = p->stage == STAGE_ADULT ? pet_form_threshold(available) : stage_threshold(p->stage);
     char have[16], need[16];
     format_tokens(p->xp, have, sizeof have);
     if (!next) {
@@ -298,6 +320,7 @@ double pet_xp_progress(const Pet *p, char *buf, size_t len) {
         return 1;
     }
     int64_t prev = p->stage == STAGE_EGG ? 0 : stage_threshold((Stage)(p->stage - 1));
+    if (p->stage == STAGE_ADULT) prev = pet_form_threshold(available - 1);
     format_tokens(next, need, sizeof need);
     snprintf(buf, len, "%s/%s", have, need);
     return (double)(p->xp - prev) / (double)(next - prev);
@@ -372,9 +395,14 @@ static void draw_stats(Canvas *c, const App *app, int64_t now_ms) {
         gfx_bar(c, 110, y + 5, 360, 10, (double)p->diet[i] / (double)most, FAINT, PALETTES[i].body);
         gfx_text(c, FONT_BODY, 484, y, TEXT, tok, 0);
     }
-    const char *hint = p->stage == STAGE_ADULT ? "Fully grown. Shape set by its favorite food."
-                                               : "Its favorite food decides its adult form.";
-    gfx_text(c, FONT_BODY, 24, y + 6, FAINT, hint, 0);
+    int forms = pet_forms_available(p);
+    if (forms - 1 > p->forms_seen)
+        snprintf(line, sizeof line, "NEW: adult forms ready! A to preview; keep or transform.");
+    else if (p->stage == STAGE_ADULT)
+        snprintf(line, sizeof line, "A: forms (%d/%d)  Natural colours follow its token diet.", forms, PET_FORMS);
+    else
+        snprintf(line, sizeof line, "A: preview adult forms. Natural colours follow its diet.");
+    gfx_text_fit(c, FONT_BODY, 24, y + 6, forms - 1 > p->forms_seen ? SAY_COL : FAINT, line, SCREEN_W - 48);
 }
 
 /* ---- Pet screen: wardrobe -------------------------------------------------------------------- */
@@ -699,15 +727,17 @@ void pet_screen_draw(Canvas *c, const App *app, int64_t now_ms) {
         gfx_text(c, FONT_BODY, 20, 200, DIM, "Waiting for a bridge (pet runs on its clock)...", 0);
         return;
     }
-    if (app->wardrobe_open && book_open) draw_book(c, app, now_ms);
+    if (app->evolution_open) evolution_draw(c, app, now_ms);
+    else if (app->wardrobe_open && book_open) draw_book(c, app, now_ms);
     else if (app->wardrobe_open) draw_wardrobe(c, app, now_ms);
     else draw_stats(c, app, now_ms);
 }
 
 const char *pet_screen_hints(const App *app) {
+    if (app->pet_ready && app->evolution_open) return evolution_hints();
     if (app->pet_ready && app->wardrobe_open && book_open) return "D-pad pick set  L2/R2 page  Y/B wardrobe  X pat";
     if (app->pet_ready && app->wardrobe_open) return "D-pad browse  L2/R2 page  A on/off  Y book  B close  X pat";
-    return "X pat  Y wardrobe  L/R switch  START clear  MENU quit";
+    return "A forms  X pat  Y wardrobe  L/R switch  MENU quit";
 }
 
 static void wardrobe_say(App *app, const char *msg, int64_t now_ms) {
@@ -750,7 +780,12 @@ static bool book_handle(Button b) {
 
 bool pet_screen_handle(App *app, Button b, int64_t now_ms) {
     if (!app->pet_ready) return false;
+    if (app->evolution_open) return evolution_handle(app, b, now_ms);
     if (!app->wardrobe_open) {
+        if (b == PAD_A) {
+            evolution_open(app);
+            return true;
+        }
         if (b != PAD_Y) return false;
         app->wardrobe_open = true;
         book_open = false;

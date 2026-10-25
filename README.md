@@ -63,14 +63,14 @@ There are three screens. Use L/R to cycle between them:
     Sleeping bots get a softer four-second breathing glow instead, including bots asleep from exhausted
     subscription fuel. Both animations run at half speed in night-dim mode; urgent states keep a steady rim.
   - The cost is Paseo's estimate at API prices (`~$`), not what a subscription actually bills.
-- **Pet**: the pet's stats and diet. Y opens the wardrobe.
+- **Pet**: the pet's stats and diet. A opens form previews; Y opens the wardrobe.
 
 Controls:
 
 | Button | Action |
 | --- | --- |
-| D-pad | Select an agent (in the Den and Pet screens, Left/Right switch screens) |
-| A | Agent details |
+| D-pad | Select an agent; browse in forms/wardrobe (otherwise Left/Right switch Den/Pet screens) |
+| A | Agent details; on Pet stats, open forms |
 | B | Back |
 | X | Pat the pet |
 | Y | Wardrobe (on the Pet screen) |
@@ -156,8 +156,28 @@ The pet asks nothing of you. There is no hunger, no decay, and no sickness, and 
 - It naps at night.
 
 It grows by lifetime tokens eaten: Egg → Baby at 5k, Kid at 100k, Teen at 500k, Adult at 2M.
-Its colors follow its favorite model family (Claude, GPT, Gemini, other). The crest it gets as an
-adult is locked in by whichever family fed it most at that moment.
+Its natural colors blend all four model-family diets (Claude, GPT, Gemini, Other), weighted by lifetime
+output tokens eaten, with a gentle light-to-dark body gradient. There is no abrupt palette swap when
+one family overtakes another, and adult colors keep responding to food. A wardrobe coat overrides
+the natural gradient; the shiny coat uses a brighter version of the diet blend.
+
+**Inherited adult forms.** The original look is always form 0. Fifteen generated forms become ready
+at 2M, 3M, 5M, 8M, 12M, 17M, 23M, 30M, 38M, 47M, 57M, 68M, 80M, 93M, and 107M lifetime tokens.
+Each pet has saved DNA, independent of its random finds. The family that fed it most on reaching
+adulthood locks its lineage; later diet changes affect colors, not anatomy. The first generated
+form combines body, ears, tail, crown, wings, markings, and movement traits. Each later form inherits
+six traits and changes one. Movements include bouncing, floating, and waddling.
+
+On **Pet → A**, compare CURRENT with PREVIEW. D-pad browses all forms; **L2/R2** jump five.
+**A transforms** into a ready form, while **B keeps the current form**. Browse previous forms to
+switch back freely, including the original. Reaching a milestone never changes the pet automatically,
+uses no items, and never resets growth. The Pet screen marks newly ready forms, and growth bars keep
+showing the next milestone after adulthood. Future-form previews before adulthood are marked
+**not final**, because the favorite feeding family can still change.
+
+Bodies share the wardrobe's face, hat, neck, and held-item anchors, so outfits stay on through
+transformations. Hats hide crowns and the tops of ears. Old saves acquire deterministic DNA and keep
+their current original shape, outfits, and collection progress; mixed diets adopt the new blended colors.
 
 The Pet screen shows:
 - today's tokens and turns,
@@ -200,7 +220,7 @@ Historical totals on a newly connected bridge, and the first catch-up from an ol
 generate find points. Clock corrections backwards cannot bypass the daily limit.
 
 The pet's state is saved to `pet.txt` next to the binary, only when something changed (at most every
-5 minutes, right away for hatching, evolving or a new unlock, and on exit). Its clock is the bridge's,
+5 minutes, promptly for hatching, evolving, new unlocks or outfit/form choices, and on exit). Its clock is the bridge's,
 because the Miyoo's own clock can't be trusted.
 
 ### Development
@@ -208,7 +228,7 @@ because the Miyoo's own clock can't be trusted.
 ```sh
 make -C miyoo desktop && PAGER_DIR=/path/with/pager.cfg miyoo/build/pager-desktop   # SDL2 window
 make -C miyoo host && PAGER_DIR=… miyoo/build/pager-host --shot out.ppm --screen agents|den|pet|detail [--sim-ms 3000]
-make -C miyoo test   # save migration, finds, set rewards, independent outfits, appearance clipping
+make -C miyoo test   # migration, finds, outfits, inherited forms, diet blends and rendering bounds
 ```
 
 Desktop keys use the Miyoo's own keyboard codes, plus Z=A and X=B. Arrows are the D-pad, Enter is START,
