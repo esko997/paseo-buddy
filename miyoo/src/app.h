@@ -100,6 +100,10 @@ typedef struct {
     /* No bridge reachable for OFFLINE_AFTER_MS: OFFLINE_WIFI if the Miyoo's own Wi-Fi is down,
      * OFFLINE_BRIDGES if Wi-Fi is up but every bridge fails. ui.c shows a banner. */
     enum { ONLINE, OFFLINE_BRIDGES, OFFLINE_WIFI } offline;
+    /* Subscription limits: copied from the newest Feed with usage_at > 0 (one bridge runs omp usage). */
+    int64_t usage_at;
+    int n_usage;
+    UsageRow usage[MAX_USAGE];
 
     /* events[i % EVENT_RING] for i in [max(0, n_events - EVENT_RING), n_events) */
     Event events[EVENT_RING];

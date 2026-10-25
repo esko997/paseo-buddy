@@ -68,6 +68,18 @@ bool feed_parse(const char *body, Feed *out) {
             out->today_day = atoll(f[1]);
             out->today_tokens = atoll(f[2]);
             out->today_cost_mc = atoll(f[3]);
+        } else if (!strcmp(f[0], "usage_at") && n >= 2) {
+            out->usage_at = atoll(f[1]);
+        } else if (!strcmp(f[0], "usage") && n >= 7 && out->n_usage < MAX_USAGE) {
+            UsageRow *u = &out->usage[out->n_usage++];
+            copy(u->provider, sizeof u->provider, f[1]);
+            copy(u->window, sizeof u->window, f[2]);
+            copy(u->label, sizeof u->label, f[3]);
+            u->used_pm = atoi(f[4]);
+            if (u->used_pm < 0) u->used_pm = 0;
+            if (u->used_pm > 1000) u->used_pm = 1000;
+            u->resets_at = atoll(f[5]);
+            copy(u->status, sizeof u->status, f[6]);
         } else if (!strcmp(f[0], "agent") && n >= 13 && out->n_agents < MAX_AGENTS) {
             Agent *a = &out->agents[out->n_agents++];
             copy(a->id, sizeof a->id, f[1]);

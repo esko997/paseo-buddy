@@ -26,6 +26,19 @@ typedef struct {
     char title[208];
 } Agent;
 
+#define MAX_USAGE 16
+
+/* One subscription-limit window from `omp usage` on a bridge with PAGER_USAGE=1:
+ * `usage\t<provider>\t<window id>\t<label>\t<used per-mille 0..1000>\t<resets unix s|0>\t<status>`
+ * Status is omp's ("ok", "warning", "exhausted", ...). */
+typedef struct {
+    char provider[24]; /* omp provider id: anthropic, openai-codex, google-antigravity, zai, ... */
+    char window[16];   /* omp window id: 5h, 7d, weekly, 1w, ... */
+    char label[40];    /* omp label, e.g. "Claude 7 Day (Fable)" */
+    int used_pm;       /* used, per mille */
+    int64_t resets_at; /* unix seconds, 0 if unknown */
+    char status[16];
+} UsageRow;
 typedef struct {
     char ledger_id[16];
     char host[40];
@@ -41,6 +54,10 @@ typedef struct {
     int64_t today_day;
     int64_t today_tokens;
     int64_t today_cost_mc; /* millicents (1/1000 of a cent) */
+    /* `usage_at\t<unix s>` + `usage` lines: only from the bridge that polls omp (0 / none otherwise). */
+    int64_t usage_at;
+    int n_usage;
+    UsageRow usage[MAX_USAGE];
     int n_agents;
     Agent agents[MAX_AGENTS];
 } Feed;

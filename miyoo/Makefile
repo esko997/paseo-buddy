@@ -1,4 +1,4 @@
-CORE := src/main.c src/ui.c src/pet_view.c src/gfx.c src/feed.c src/net.c src/pet.c src/scene.c src/audio.c
+CORE := src/main.c src/ui.c src/pet_view.c src/gfx.c src/feed.c src/net.c src/pet.c src/scene.c src/audio.c src/usage.c
 HDRS := $(wildcard src/*.h)
 WARN := -Wall -Wextra -Wno-unused-parameter
 LIBS := -lm -lpthread

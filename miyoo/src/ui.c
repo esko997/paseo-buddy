@@ -6,9 +6,17 @@
 #include "pet_view.h"
 #include "scene.h"
 #include "theme.h"
+#include "usage.h"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#include "sprites.h"
+#pragma GCC diagnostic pop
 
 #define STRIP_Y 40
-#define STRIP_H 124
+#define STRIP_H 94
+#define FUEL_Y 134 /* usage row: one gauge per provider */
+#define FUEL_H 34
 #define LIST_Y 168
 #define ROW_H 46
 #define LIST_ROWS 6
@@ -94,13 +102,34 @@ static void draw_header(Canvas *c, const App *app, int64_t now_ms) {
                                                     : FAINT;
         gfx_rect(c, cx - 22 - (app->cfg.n_bridges - 1 - i) * 16, 15, 10, 10, col);
     }
+    /* fuel pump when a subscription runs low (yellow) or out (red, breathing slowly) */
+    int left_x = cx - 22 - app->cfg.n_bridges * 16;
+    UsageLevel fuel = usage_worst_level(app);
+    if (fuel != USAGE_OK) {
+        int fx = left_x - 2, fy = 12;
+        uint32_t col = usage_level_col(fuel), win = flash ? ALERT_COL : CHROME;
+        if (fuel == USAGE_FULL && !app->night_dim) {
+            int ph = (int)(now_ms % 2400);
+            col = lerp_col(0x8a2a2e, col, (ph < 1200 ? ph : 2400 - ph) * 256 / 1200);
+        }
+        if (usage_state(app) == USAGE_STALE) col = lerp_col(col, CHROME, 120);
+        if (flash) col = BG;
+        gfx_rect(c, fx + 1, fy, 6, 1, col);
+        gfx_rect(c, fx, fy + 1, 8, 14, col);
+        gfx_rect(c, fx - 1, fy + 14, 10, 2, col);
+        gfx_rect(c, fx + 2, fy + 3, 4, 4, win);
+        gfx_rect(c, fx + 8, fy + 3, 2, 2, col); /* hose and nozzle */
+        gfx_rect(c, fx + 10, fy + 4, 2, 8, col);
+        gfx_rect(c, fx + 9, fy + 11, 2, 2, col);
+        left_x = fx - 8;
+    }
     if (app->battery >= 0 || app->charging) {
         char bat[16];
         bool known = app->battery >= 0 && app->battery <= 100;
         if (app->charging && known) snprintf(bat, sizeof bat, "+%d%%", app->battery);
         else if (app->charging) snprintf(bat, sizeof bat, "PLUG");
         else snprintf(bat, sizeof bat, "%d%%", app->battery > 100 ? 100 : app->battery);
-        int bx = cx - 22 - app->cfg.n_bridges * 16 - (int)strlen(bat) * gfx_font_w(FONT_BODY);
+        int bx = left_x - (int)strlen(bat) * gfx_font_w(FONT_BODY);
         uint32_t col = app->charging ? 0x46c06f : app->battery <= 15 ? ALERT_COL : DIM;
         gfx_text(c, FONT_BODY, bx, 10, flash ? BG : col, bat, 0);
     }
@@ -128,29 +157,84 @@ static const char *short_model(const char *model) {
 static void draw_strip(Canvas *c, const App *app, int64_t now_ms) {
     gfx_rect(c, 0, STRIP_Y, SCREEN_W, STRIP_H, PANEL);
     if (!app->pet_ready) {
-        gfx_text(c, FONT_BODY, 20, STRIP_Y + 50, DIM, "Waiting for a bridge (pet runs on its clock)...", 0);
+        gfx_text(c, FONT_BODY, 20, STRIP_Y + 36, DIM, "Waiting for a bridge (pet runs on its clock)...", 0);
         return;
     }
     const Pet *p = &app->pet;
-    ui_draw_pet(c, app, 16, STRIP_Y + 14, 6, now_ms);
-    int x = 136, y = STRIP_Y + 8;
+    ui_draw_pet(c, app, 18, STRIP_Y + 7, 5, now_ms);
+    int x = 116, y = STRIP_Y + 3;
     char line[64];
     snprintf(line, sizeof line, "%s the %s", p->name, stage_name(p->stage));
     gfx_text(c, FONT_BODY, x, y, TEXT, line, 0);
     const char *say = now_ms < app->bubble_until_ms ? app->bubble : pet_mood_line(app, app_now(app));
-    gfx_text_fit(c, FONT_BODY, x, y + 24, now_ms < app->bubble_until_ms ? SAY_COL : DIM, say, SCREEN_W - x - 12);
+    gfx_text_fit(c, FONT_BODY, x, y + 22, now_ms < app->bubble_until_ms ? SAY_COL : DIM, say, SCREEN_W - x - 12);
     char xp[40];
     double frac = pet_xp_progress(p, xp, sizeof xp);
-    gfx_text(c, FONT_BODY, x, y + 52, DIM, "GROW", 0);
-    gfx_bar(c, x + 50, y + 57, 150, 10, frac, FAINT, GROW_COL);
-    gfx_text(c, FONT_BODY, x, y + 78, DIM, xp, 0);
+    gfx_text(c, FONT_BODY, x, y + 45, DIM, "GROW", 0);
+    gfx_bar(c, x + 50, y + 50, 150, 10, frac, FAINT, GROW_COL);
+    gfx_text(c, FONT_BODY, x, y + 67, DIM, xp, 0);
     /* Token throughput, last RATE_MINUTES minutes. */
-    gfx_text(c, FONT_BODY, x + 230, y + 52, DIM, "tok/min", 0);
-    scene_draw_sparkline(c, app, x + 310, y + 50, SCREEN_W - x - 310 - 14, 48, now_ms);
+    gfx_text(c, FONT_BODY, x + 230, y + 45, DIM, "tok/min", 0);
+    scene_draw_sparkline(c, app, x + 310, y + 43, SCREEN_W - x - 310 - 14, 46, now_ms);
+}
+
+/* Fuel bar: drains as the window fills. */
+static void fuel_bar(Canvas *c, int x, int y, int w, int used_pm, uint32_t col, uint32_t track) {
+    int left = 1000 - used_pm, fw = left * w / 1000;
+    if (left > 0 && fw < 2) fw = 2;
+    gfx_rect(c, x, y, w, 6, track);
+    if (fw > 0) {
+        gfx_rect(c, x, y, fw, 6, col);
+        gfx_rect(c, x, y, fw, 1, lerp_col(col, 0xffffff, 90));
+    }
+}
+
+/* Usage row under the strip: per provider its name, fuel left in the worst window (or, once empty,
+ * time to refill) and bars for that window and the 5h one. Dimmed when the data is old. */
+static void draw_fuel_row(Canvas *c, const App *app) {
+    const uint32_t bg = 0x13161e;
+    gfx_rect(c, 0, FUEL_Y, SCREEN_W, FUEL_H, bg);
+    UsageSummary u[MAX_USAGE_PROVIDERS];
+    int n = usage_summarize(app, u, MAX_USAGE_PROVIDERS);
+    if (n == 0) {
+        scene_tiny_text(c, 14, FUEL_Y + 12, 2, FAINT, "FUEL");
+        gfx_text(c, FONT_BODY, 56, FUEL_Y + 7, DIM, "?", 0);
+        return;
+    }
+    if (n > 4) n = 4;
+    int dim = usage_state(app) == USAGE_STALE ? 120 : 0;
+    int64_t now = app_now(app);
+    const int gap = 6, cw = (SCREEN_W - 2 * gap - (n - 1) * gap) / n;
+    const uint32_t cell = 0x1e222d, track = lerp_col(0x2c3140, cell, dim);
+    for (int i = 0; i < n; i++) {
+        const UsageSummary *s = &u[i];
+        int x = gap + i * (cw + gap), y = FUEL_Y + 1;
+        gfx_rect(c, x, y, cw, FUEL_H - 2, cell);
+        uint32_t col = lerp_col(usage_level_col(s->level), cell, dim);
+        gfx_text(c, FONT_BODY, x + 6, y, lerp_col(PALETTES[s->family].light, cell, dim), s->name, 0);
+        char val[16];
+        if (s->level == USAGE_FULL && s->worst_reset > now) usage_format_eta(s->worst_reset - now, val, sizeof val);
+        else snprintf(val, sizeof val, "%d%%", (1000 - s->worst_pm + 5) / 10);
+        int vw = (int)strlen(val) * gfx_font_w(FONT_BODY);
+        gfx_text(c, FONT_BODY, x + cw - 6 - vw, y, s->level == USAGE_OK ? lerp_col(TEXT, cell, dim) : col, val, 0);
+        /* bars: worst window, plus the 5h one when that isn't the worst */
+        int by = y + 21, bx = x + 6, end = x + cw - 6;
+        bool split = s->short_pm >= 0 && strcmp(s->short_tag, s->worst_tag);
+        if (split) {
+            int sw = scene_tiny_width(2, s->short_tag), sx = end - 34 - sw;
+            UsageLevel sl = usage_level_of(s->short_pm);
+            scene_tiny_text(c, sx, by + 1, 2, lerp_col(DIM, cell, dim), s->short_tag);
+            fuel_bar(c, sx + sw + 2, by + 3, 32, s->short_pm, lerp_col(usage_level_col(sl), cell, dim), track);
+            end = sx - 8;
+        }
+        int tw = scene_tiny_text(c, bx, by + 1, 2, lerp_col(DIM, cell, dim), s->worst_tag);
+        fuel_bar(c, bx + tw + 2, by + 3, end - bx - tw - 2, s->worst_pm, col, track);
+    }
 }
 
 static void draw_agents(Canvas *c, const App *app, int64_t now_ms) {
     draw_strip(c, app, now_ms);
+    draw_fuel_row(c, app);
     int64_t now = app_now(app);
     if (app->n_rows == 0) {
         int y = LIST_Y + 20;

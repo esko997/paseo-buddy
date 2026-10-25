@@ -1,7 +1,9 @@
 /* The den: a cozy pixel-art room where every visible agent is a little robot at a desk and the
  * pet wanders the rug eating the token crumbs they produce. An ATM in the corner shows today's
- * tokens and estimated cost. Everything is gfx_rect/gfx_text level drawing; animation state lives
- * in a fixed particle pool, positions are analytic in age so drawing never mutates the scene.
+ * tokens and estimated cost; a wall panel takes turns between tok/min and subscription fuel, and
+ * robots whose provider runs low on fuel look tired. Everything is gfx_rect/gfx_text level
+ * drawing; animation state lives in a fixed particle pool, positions are analytic in age so
+ * drawing never mutates the scene.
  * The den is on screen for hours on a desk, so something small always moves: ambient events every
  * few minutes (a bird or cat at the window, the pet tidying, a robot stretching) and a sunlight
  * patch that drifts with the time of day. With app->night_dim everything gets calmer and sparser. */
@@ -13,6 +15,7 @@
 #include <string.h>
 
 #include "theme.h"
+#include "usage.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-variable"
@@ -21,6 +24,7 @@
 
 #define WHITE 0xf4f4f8
 #define GOLD 0xffd166
+#define VISOR 0x14161f
 
 /* ---- layout ------------------------------------------------------------------------------ */
 
@@ -330,6 +334,8 @@ static void handle_event(Scene *s, const App *app, const Event *e, int64_t now) 
         for (int64_t v = e->amount; v > 1; v >>= 1) n++;
         if (n < 1) n = 1;
         if (n > 14) n = 14;
+        n /= 1 + (int)usage_family_level(app, e->family); /* a provider low on fuel sheds fewer crumbs */
+        if (n < 1) n = 1;
         const Palette *pal = family_pal(e->family);
         int64_t last = now;
         for (int i = 0; i < n; i++) {
@@ -894,6 +900,7 @@ static void draw_window_light(Canvas *c, const Light *L) {
     }
 }
 
+static void draw_wall_panel(Canvas *c, const App *app, const Light *L, int64_t now);
 static void draw_room(Canvas *c, const Light *L, const Scene *s, const App *app, int64_t now) {
     R(c, 0, DEN_Y, SCREEN_W, WALL_B - DEN_Y, L->wall);
     for (int x = 20; x < SCREEN_W; x += 40) R(c, x, DEN_Y, 2, WALL_B - DEN_Y - 8, L->wall_hi);
@@ -901,7 +908,7 @@ static void draw_room(Canvas *c, const Light *L, const Scene *s, const App *app,
     R(c, 0, WALL_B - 8, SCREEN_W, 1, L->wall_hi);
     draw_window(c, L, now);
     draw_hud(c, app, now);
-    draw_rate_panel(c, app, now);
+    draw_wall_panel(c, app, L, now);
 
     R(c, 0, WALL_B, SCREEN_W, DEN_B - WALL_B, L->floor);
     for (int k = 0, y = WALL_B + 18; y < DEN_B; k++, y += 20) {
@@ -964,7 +971,7 @@ static void draw_rug_ripple(Canvas *c, const Scene *s, const Light *L, int64_t n
 
 /* ---- ATM --------------------------------------------------------------------------------- */
 
-/* 3x5 pixel font for the ATM: rows are 3-bit (bit 2 = left); '.' is one column wide. */
+/* 3x5 pixel font for the ATM and fuel panel: rows are w-bit (bit w-1 = left); '.' is one column wide. */
 static const struct {
     char ch;
     uint8_t w;
@@ -976,7 +983,10 @@ static const struct {
     {'M', 3, {5, 7, 7, 5, 5}}, {'B', 3, {6, 5, 6, 5, 6}}, {'$', 3, {3, 6, 2, 3, 6}}, {'~', 3, {0, 6, 3, 0, 0}},
     {'T', 3, {7, 2, 2, 2, 2}}, {'O', 3, {7, 5, 5, 5, 7}}, {'D', 3, {6, 5, 5, 5, 6}}, {'A', 3, {2, 5, 7, 5, 5}},
     {'Y', 3, {5, 5, 2, 2, 2}}, {'K', 3, {5, 5, 6, 5, 5}}, {'E', 3, {7, 4, 6, 4, 7}}, {'N', 3, {6, 5, 5, 5, 5}},
-    {'S', 3, {3, 4, 2, 1, 6}}, {'C', 3, {7, 4, 4, 4, 7}}, {' ', 2, {0, 0, 0, 0, 0}},
+    {'S', 3, {3, 4, 2, 1, 6}}, {'C', 3, {7, 4, 4, 4, 7}}, {' ', 2, {0, 0, 0, 0, 0}}, {'F', 3, {7, 4, 6, 4, 4}},
+    {'U', 3, {5, 5, 5, 5, 7}}, {'L', 3, {4, 4, 4, 4, 7}}, {'h', 3, {4, 4, 7, 5, 5}}, {'d', 3, {1, 1, 7, 5, 7}},
+    {'o', 3, {0, 0, 7, 5, 7}}, {'m', 5, {0, 0, 30, 21, 21}}, {'w', 5, {0, 0, 17, 21, 10}}, {'y', 3, {0, 5, 5, 2, 4}},
+    {'a', 3, {0, 6, 1, 7, 7}}, {'%', 3, {5, 1, 2, 4, 5}}, {'?', 3, {7, 1, 3, 0, 2}}, {'!', 1, {1, 1, 1, 0, 1}},
 };
 
 /* Draws at scale sc, clipped to k; returns the advance width (gap after each glyph). */
@@ -995,6 +1005,145 @@ static int tiny_text(Canvas *c, const Clip *k, int x, int y, int sc, uint32_t co
         x += (w + 1) * sc;
     }
     return x - x0;
+}
+
+int scene_tiny_text(Canvas *c, int x, int y, int sc, uint32_t col, const char *str) {
+    static const Clip screen = {0, 0, SCREEN_W, SCREEN_H};
+    return tiny_text(c, &screen, x, y, sc, col, str);
+}
+
+int scene_tiny_width(int sc, const char *str) {
+    int w = 0;
+    for (; *str; str++)
+        for (int g = 0; g < (int)(sizeof TINY / sizeof TINY[0]); g++)
+            if (TINY[g].ch == *str) {
+                w += (TINY[g].w + 1) * sc;
+                break;
+            }
+    return w;
+}
+
+/* ---- fuel panel (subscription limits) ------------------------------------------------------ */
+
+static const char *WORKER[12];
+
+/* Robot head (WORKER rows 1..8) at scale 2, 24x16, its eyes showing how much fuel is left. */
+static void fuel_head(Canvas *c, const Palette *pal, int x, int y, UsageLevel lvl, int64_t now, uint32_t dim_to,
+                      int dim) {
+    for (int r = 1; r < 9; r++)
+        for (int col = 0; col < 12;) {
+            char ch = WORKER[r][col];
+            int run = col + 1;
+            while (run < 12 && WORKER[r][run] == ch) run++;
+            uint32_t color = ch == 'o' ? COL_OUTLINE : ch == 'b' ? pal->body : ch == 'l' ? pal->light
+                           : ch == 'd'   ? pal->dark
+                           : ch == 'v'   ? VISOR
+                                         : 0;
+            if (color) R(c, x + col * 2, y + (r - 1) * 2, (run - col) * 2, 2, lerp_col(color, dim_to, dim));
+            col = run;
+        }
+    uint32_t glow = lerp_col(pal->accent, dim_to, dim);
+    bool blink = lvl == USAGE_OK && (now / 130) % 41 == 0;
+    for (int e = 0; e < 2; e++) {
+        int ex = x + 7 + e * 7;
+        if (lvl == USAGE_FULL || blink) R(c, ex, y + 10, 4, 1, glow); /* asleep */
+        else if (lvl == USAGE_WARN) {                               /* heavy lids */
+            R(c, ex, y + 9, 4, 1, lerp_col(pal->dark, dim_to, dim));
+            R(c, ex + 1, y + 10, 2, 2, glow);
+        } else R(c, ex + 1, y + 7, 2, 4, glow);
+    }
+}
+
+#define WP_X 444
+#define WP_Y 46
+#define WP_W 140 /* x 590..634 is the unlockable wall-decor spot */
+#define WP_H 104
+#define WP_CYCLE_MS 10000 /* the wall panel alternates tok/min and fuel */
+#define WP_FLIP_MS 280
+
+/* One row per provider (up to four): robot head in its family colours, a fuel bar that drains as
+ * the worst window fills, and what is left (or, when empty, how long until it refills). The title
+ * row counts down to the reset of the most-used window. */
+static void draw_fuel_panel(Canvas *c, const App *app, const UsageSummary *u, int n, UsageState st, const Light *L,
+                            int64_t now) {
+    const int x = WP_X, y = WP_Y, w = WP_W;
+    const uint32_t bg = 0x12151d;
+    const int dim = st == USAGE_STALE ? 130 : 0;
+    R(c, x, y, w, WP_H, 0x2a3040);
+    R(c, x + 2, y + 2, w - 4, WP_H - 4, bg);
+    const Clip k = {x + 2, y + 2, x + w - 2, y + WP_H - 2};
+    tiny_text(c, &k, x + 8, y + 6, 2, lerp_col(GOLD, bg, dim), "FUEL");
+    int64_t t = app_now(app);
+    int wi = 0;
+    for (int i = 1; i < n; i++)
+        if (u[i].worst_pm > u[wi].worst_pm) wi = i;
+    char eta[16];
+    if (st == USAGE_STALE) {
+        tiny_text(c, &k, x + w - 8 - scene_tiny_width(2, "OLD"), y + 6, 2, DIM, "OLD");
+    } else if (n && u[wi].worst_reset > t && u[wi].worst_pm > 0) {
+        usage_format_eta(u[wi].worst_reset - t, eta, sizeof eta);
+        int ew = scene_tiny_width(2, eta);
+        uint32_t col = u[wi].level == USAGE_OK ? DIM : usage_level_col(u[wi].level);
+        tiny_text(c, &k, x + w - 8 - ew, y + 6, 2, col, eta);
+        /* family swatch: whose window that is */
+        const Palette *pal = family_pal(u[wi].family);
+        R(c, x + w - 8 - ew - 10, y + 7, 6, 8, pal->body);
+        R(c, x + w - 8 - ew - 10, y + 7, 6, 2, pal->light);
+    }
+    if (n > 4) n = 4;
+    for (int i = 0; i < n; i++) {
+        int ry = y + 21 + i * 20;
+        fuel_head(c, family_pal(u[i].family), x + 7, ry + 2, u[i].level, now, bg, dim);
+        int left = 1000 - u[i].worst_pm;
+        uint32_t col = lerp_col(usage_level_col(u[i].level), bg, dim);
+        char txt[16];
+        if (u[i].level == USAGE_FULL && u[i].worst_reset > t) usage_format_eta(u[i].worst_reset - t, txt, sizeof txt);
+        else snprintf(txt, sizeof txt, "%d%%", (left + 5) / 10);
+        int tw = (int)strlen(txt) * gfx_font_w(FONT_BODY);
+        gfx_text(c, FONT_BODY, x + w - 6 - tw, ry, u[i].level == USAGE_OK ? lerp_col(TEXT, bg, dim) : col, txt, 0);
+        /* tank: outline, drained track, fuel, quarter ticks */
+        int bx = x + 36, bw = x + w - 6 - tw - 6 - bx, by = ry + 6;
+        uint32_t rim = 0x3a4058;
+        if (u[i].level == USAGE_FULL && st == USAGE_FRESH && !L->calm) /* a slow, gentle breath */
+            rim = lerp_col(0x5a2024, 0xa83a3e, 128 + isin((int)(now / 32)) * 2);
+        R(c, bx - 1, by - 1, bw + 2, 10, lerp_col(rim, bg, dim));
+        R(c, bx, by, bw, 8, 0x1c1f28);
+        int fw = left * bw / 1000;
+        if (left > 0 && fw < 2) fw = 2;
+        if (fw > 0) {
+            R(c, bx, by, fw, 8, col);
+            R(c, bx, by, fw, 2, lerp_col(lerp_col(col, 0xffffff, 90), bg, dim));
+        }
+        for (int q = 1; q < 4; q++) R(c, bx + bw * q / 4, by + 5, 1, 3, 0x0e1016);
+    }
+}
+
+/* Wall panel at WP_X: tok/min and fuel take turns (fuel stays up while nothing is running and the
+ * chart is empty); a switch reveals the new panel from its middle out, like an old CRT. */
+static void draw_wall_panel(Canvas *c, const App *app, const Light *L, int64_t now) {
+    UsageSummary u[MAX_USAGE_PROVIDERS];
+    UsageState st = usage_state(app);
+    int n = usage_summarize(app, u, MAX_USAGE_PROVIDERS);
+    if (!n) {
+        draw_rate_panel(c, app, now);
+        return;
+    }
+    /* the chart shows rate[lag..]; nothing there and nobody running: keep the fuel up */
+    bool quiet = app->n_running == 0;
+    int64_t lag = app_now(app) / 60 - app->rate_minute;
+    for (int64_t i = lag < 0 ? 0 : lag; quiet && i < RATE_MINUTES; i++)
+        if (app->rate[i]) quiet = false;
+    bool fuel = quiet || (now / WP_CYCLE_MS) % 2;
+    if (fuel) draw_fuel_panel(c, app, u, n, st, L, now);
+    else draw_rate_panel(c, app, now);
+    int64_t age = now % WP_CYCLE_MS;
+    if (quiet || L->calm || age >= WP_FLIP_MS) return;
+    int half = (WP_H - 4) / 2, open = (int)(age * half / WP_FLIP_MS);
+    int mid = WP_Y + 2 + half;
+    R(c, WP_X + 2, WP_Y + 2, WP_W - 4, half - open, 0x12151d);
+    R(c, WP_X + 2, mid + open, WP_W - 4, half - open, 0x12151d);
+    R(c, WP_X + 2, mid - open - 1, WP_W - 4, 1, 0x5a6a8a);
+    R(c, WP_X + 2, mid + open, WP_W - 4, 1, 0x5a6a8a);
 }
 
 static void format_cost(int64_t mc, char *buf, size_t len) {
@@ -1064,10 +1213,8 @@ static const char *WORKER[12] = {
     ".obvvvvvvdo.", ".obbbbbbbdo.", "..oooooooo..", "...obbbbo...", "..obbbbbbo..", "..obbbbbbo..",
 };
 
-typedef enum { EYE_OPEN, EYE_WIDE, EYE_CLOSED, EYE_HAPPY, EYE_X } Eyes;
+typedef enum { EYE_OPEN, EYE_WIDE, EYE_CLOSED, EYE_HAPPY, EYE_X, EYE_TIRED } Eyes;
 typedef enum { ARM_TYPE, ARM_REST, ARM_UP, ARM_WAVE, ARM_STRETCH } Arms;
-
-#define VISOR 0x14161f
 
 /* For ARM_STRETCH, `tick` is how far the arms are raised (px) instead of an animation clock. */
 static void draw_worker(Canvas *c, const Palette *pal, int x, int y, Eyes eyes, int look, Arms arms, int tick) {
@@ -1098,6 +1245,10 @@ static void draw_worker(Canvas *c, const Palette *pal, int x, int y, Eyes eyes, 
         int ex = x + 11 + e * 9;
         switch (eyes) {
         case EYE_OPEN: R(c, ex + 1 + look * 2, ey, 3, 6, glow); break;
+        case EYE_TIRED: /* heavy lids over half-open eyes */
+            R(c, ex + look * 2, ey + 1, 5, 2, pal->dark);
+            R(c, ex + 1 + look * 2, ey + 3, 3, 3, glow);
+            break;
         case EYE_WIDE:
             R(c, ex, ey - 1, 5, 7, glow);
             R(c, ex + 1, ey, 2, 2, 0xffffff);
@@ -1204,8 +1355,10 @@ static void draw_bubble(Canvas *c, int x, int y, int w, int h, uint32_t fill) {
     R(c, x + w / 2 - 1, y + h + 2, 2, 2, COL_OUTLINE);
 }
 
-/* stretch_age: ms into an ambient stretch for this worker, -1 for none. */
-static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, int stretch_age, int64_t now) {
+/* stretch_age: ms into an ambient stretch for this worker, -1 for none. fatigue: how spent the
+ * worker's provider is (usage_family_level): WARN looks tired, FULL sleepy with an empty battery. */
+static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, int stretch_age, UsageLevel fatigue,
+                      int64_t now) {
     const Row *row = &app->rows[i];
     const Agent *a = &row->agent;
     int sx, d;
@@ -1215,7 +1368,7 @@ static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, i
     const Palette *pal = family_pal(a->family);
     int wx = sx + 26, wy = d - 30;
     int mx = sx + 80, my = d - 40;
-    int tick = (int)((now + ph) / (L->calm ? 330 : 110));
+    int tick = (int)((now + ph) / ((L->calm ? 330 : 110) * (1 + (int)fatigue))); /* tired hands type slower */
 
     int dy = 0, look = 0;
     Eyes eyes = EYE_OPEN;
@@ -1252,6 +1405,12 @@ static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, i
         dy = 2;
         break;
     }
+    /* out of subscription fuel: droopy at WARN, dozing at FULL (urgent states keep their faces) */
+    if (fatigue != USAGE_OK && (a->bucket == B_RUNNING || a->bucket == B_ATTENTION || a->bucket == B_DONE)) {
+        if (fatigue == USAGE_FULL) eyes = EYE_CLOSED;
+        else if (eyes == EYE_OPEN) eyes = EYE_TIRED;
+        if (a->bucket != B_DONE) dy += (int)fatigue;
+    }
     int raise = 0;
     if (stretch_age >= 0) { /* arms up, eyes shut, a long reach */
         arms = ARM_STRETCH;
@@ -1264,6 +1423,15 @@ static void draw_desk(Canvas *c, const App *app, const Light *L, int i, int n, i
     R(c, wx + 1, d - 16, 34, 18, 0x2a2f40);
     R(c, wx + 1, d - 16, 34, 2, 0x3d4459);
     draw_worker(c, pal, wx, wy + dy, eyes, look, arms, arms == ARM_STRETCH ? raise : tick);
+    if (fatigue == USAGE_FULL && (a->bucket == B_RUNNING || a->bucket == B_DONE)) {
+        /* empty battery over the head (clear of the wall panel above row one), last cell breathing */
+        int bx = wx + 11, by = wy + dy - 9;
+        R(c, bx, by, 13, 7, 0x9aa0b0);
+        R(c, bx + 13, by + 2, 2, 3, 0x9aa0b0);
+        R(c, bx + 1, by + 1, 11, 5, 0x22252e);
+        uint32_t cell = L->calm ? 0xa83a3e : lerp_col(0x6a2024, 0xe5484d, 128 + isin((int)((now + ph) / 24)) * 2);
+        R(c, bx + 2, by + 2, 2, 3, cell);
+    }
     if (a->ctx_pct >= CTX_WARN) { /* context nearly full: sweat drops */
         int cyc = L->calm ? 1400 : 700;
         for (int k = 0; k < 2; k++) {
@@ -1575,7 +1743,13 @@ void scene_draw_den(const Scene *s, const App *app, Canvas *c, int64_t now_ms) {
             int j = (int)((L.amb.h + (uint32_t)k) % (uint32_t)n);
             if (app->rows[j].agent.bucket == B_DONE) stretcher = j;
         }
-    for (int i = 0; i < n; i++) draw_desk(c, app, &L, i, n, i == stretcher ? (int)L.amb.age : -1, now_ms);
+    UsageLevel fatigue[N_FAMILIES];
+    for (int f = 0; f < N_FAMILIES; f++) fatigue[f] = usage_family_level(app, (Family)f);
+    for (int i = 0; i < n; i++) {
+        Family f = app->rows[i].agent.family;
+        draw_desk(c, app, &L, i, n, i == stretcher ? (int)L.amb.age : -1,
+                  fatigue[(unsigned)f < N_FAMILIES ? f : FAM_OTHER], now_ms);
+    }
     if (n == 0) {
         const char *msg = "No agents right now";
         int w = (int)strlen(msg) * gfx_font_w(FONT_BODY);

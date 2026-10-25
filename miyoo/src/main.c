@@ -306,6 +306,11 @@ static FeedOutcome apply_feed(App *app, int bi, const Feed *f, int64_t now_ms) {
 
     app->feeds[bi] = *f;
     app->have_feed[bi] = true;
+    if (f->usage_at > 0 && f->usage_at >= app->usage_at) { /* the bridge that runs omp usage */
+        app->usage_at = f->usage_at;
+        app->n_usage = f->n_usage;
+        memcpy(app->usage, f->usage, sizeof app->usage[0] * (size_t)f->n_usage);
+    }
     if (f->now > PLAUSIBLE_EPOCH) {
         app->clock_offset = f->now - (int64_t)time(NULL);
         app->tz_offset = f->tz_offset;

@@ -101,6 +101,27 @@ If no bridge has answered for 30 seconds, a red banner says why: either the Miyo
 (switch it back on in Onion's menu) or Wi-Fi is up but no bridge answers. Losing the connection buzzes
 once and wakes the screen.
 
+### Subscription fuel gauges
+
+One bridge (run `bridge/install.sh --usage` on it) polls `omp usage --json` every 5 minutes. That covers
+every provider omp is logged into: Claude, Codex, Antigravity and Z.ai, each with its own windows
+(5-hour, weekly, per model).
+
+The gauges show fuel **left**:
+- **Agents screen:** a row with one cell per provider, showing the % left in its tightest window. A small
+  bar shows the 5-hour window when that isn't the tightest.
+- **Den:** the wall panel alternates between tok/min and a FUEL panel. The FUEL panel counts down to the
+  next reset of the most-used window.
+- **Header:** a fuel-pump icon appears on every screen when any provider is low.
+
+When a provider is low, its robots in the den get sleepy and drop fewer token crumbs.
+
+Colours:
+- **Yellow:** 80% or more used (20% or less left).
+- **Red:** 95% or more used, or out. A red cell shows the time until it refills.
+
+Readings older than 20 minutes are dimmed.
+
 ### Always on
 
 The pager is built to sit on a desk plugged in. While on USB power (`awake_on_power = 1`):
