@@ -131,9 +131,10 @@ The pager is built to sit on a desk plugged in. While on USB power (`awake_on_po
 - The screen stays on.
 - The pager sets Onion's `/tmp/stay_awake` flag, so Onion won't idle-sleep. A power-button press then only
   turns the screen off; the pager keeps running and paging.
-- From 23:00 to 07:00 (bridge time) the screen dims to `night_dim` (an Onion brightness level, default 1;
-  `-1` turns this off) and the UI drops to about 5 frames a second. Your Onion brightness comes back in the
-  morning and when the app exits. `launch.sh` also restores it after a crash.
+- From 01:00 to 06:00 (bridge-local time) the screen dims to `night_dim` (an Onion brightness level,
+  default 0: the lowest lit setting; `-1` disables dimming) and the UI drops to about 5 frames a second.
+  Your Onion brightness returns at 06:00, on unplugging, and when the app exits. `launch.sh` also restores
+  it after a crash. Tok's sleeping hours and quiet sounds remain 23:00–07:00, independently.
 - `battery_care = 1` (the default) sets the Mini Plus's charge controller (AXP223, REG 0x33) to stop at
   4.1 V instead of 4.2 V, about 85–90% full. That's much easier on a battery that never unplugs.
   - It's applied every time the pager starts.

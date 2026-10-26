@@ -94,10 +94,12 @@ static void screen_sleep(void) {
     g_screen_on = false;
 }
 
-/* 23:00-07:00 bridge time while on external power: dim to `night_dim`, then back to the user's own
- * Onion level (re-read from Onion's settings, so a change made overnight is respected). */
+/* 01:00-06:00 bridge-local time while on external power. This is independent of the pet's
+ * 23:00-07:00 sleep and quiet-sound hours. Restore the user's current Onion level afterwards. */
 static void night_update(App *app, bool on_power) {
-    bool want = app->cfg.night_dim >= 0 && on_power && app->clock_synced && pet_asleep(app_now(app), app->tz_offset);
+    int64_t local = (app_now(app) + app->tz_offset) % 86400;
+    if (local < 0) local += 86400;
+    bool want = app->cfg.night_dim >= 0 && on_power && app->clock_synced && local >= 3600 && local < 6 * 3600;
     if (want == app->night_dim) return;
     int own = plat_brightness_setting();
     if (want && (own < 0 || app->cfg.night_dim >= own)) return; /* could not restore it, or nothing to dim */

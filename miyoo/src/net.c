@@ -33,7 +33,7 @@ bool config_load(const char *path, Config *cfg, char *err, size_t errlen) {
     cfg->awake_on_power = true;
     cfg->volume = 4;
     cfg->quiet_nights = true;
-    cfg->night_dim = 1;
+    cfg->night_dim = 0;
     cfg->battery_care = true;
     FILE *f = fopen(path, "r");
     if (!f) {

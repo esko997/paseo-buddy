@@ -16,9 +16,9 @@ quiet_nights = 1
 screen_timeout = 120
 # Keep the screen on while plugged in (1/0)
 awake_on_power = 1
-# Backlight level 0-10 (Onion's scale) from 23:00 to 07:00 (bridge's local time) while plugged in;
-# your own level comes back in the morning. -1 = never dim.
-night_dim = 1
+# Backlight level 0-10 (Onion's scale) from 01:00 to 06:00 (bridge's local time) while plugged in;
+# 0 is the lowest lit setting. Your own level comes back in the morning. -1 = never dim.
+night_dim = 0
 # Mini Plus: charge the battery to 4.1 V instead of 4.2 V, which is kinder to a battery that lives
 # on the charger (1/0). 0 puts back 4.2 V.
 battery_care = 1
